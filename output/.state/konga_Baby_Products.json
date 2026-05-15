@@ -1,0 +1,9 @@
+{
+  "platform": "konga",
+  "category": "Baby_Products",
+  "completed_urls": [
+    "https://www.konga.com/product/example-product-1",
+    "https://www.konga.com/product/example-product-2",
+    "https://www.konga.com/product/example-product-3"
+  ]
+}

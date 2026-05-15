@@ -1,0 +1,299 @@
+{
+  "generated_at": 1778856126,
+  "platforms": {
+    "jumia_ng": {
+      "categories": {
+        "Cell_Phones_and_Accessories": {
+          "review_file": "jumia/review_categories/Cell_Phones_and_Accessories.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Cell_Phones_and_Accessories.jsonl.gz",
+          "num_reviews": 3958,
+          "num_products": 485,
+          "num_meta_records": 485,
+          "avg_reviews_per_product": 8.2
+        },
+        "Beauty_and_Personal_Care": {
+          "review_file": "jumia/review_categories/Beauty_and_Personal_Care.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Beauty_and_Personal_Care.jsonl.gz",
+          "num_reviews": 11598,
+          "num_products": 447,
+          "num_meta_records": 482,
+          "avg_reviews_per_product": 25.9
+        },
+        "Electronics": {
+          "review_file": "jumia/review_categories/Electronics.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Electronics.jsonl.gz",
+          "num_reviews": 7700,
+          "num_products": 465,
+          "num_meta_records": 499,
+          "avg_reviews_per_product": 16.6
+        },
+        "Clothing_Shoes_and_Jewelry": {
+          "review_file": "jumia/review_categories/Clothing_Shoes_and_Jewelry.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Clothing_Shoes_and_Jewelry.jsonl.gz",
+          "num_reviews": 13267,
+          "num_products": 484,
+          "num_meta_records": 493,
+          "avg_reviews_per_product": 27.4
+        },
+        "Grocery_and_Gourmet_Food": {
+          "review_file": "jumia/review_categories/Grocery_and_Gourmet_Food.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Grocery_and_Gourmet_Food.jsonl.gz",
+          "num_reviews": 383,
+          "num_products": 22,
+          "num_meta_records": 25,
+          "avg_reviews_per_product": 17.4
+        },
+        "Appliances": {
+          "review_file": "jumia/review_categories/Appliances.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Appliances.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        },
+        "Home_and_Kitchen": {
+          "review_file": "jumia/review_categories/Home_and_Kitchen.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Home_and_Kitchen.jsonl.gz",
+          "num_reviews": 13027,
+          "num_products": 483,
+          "num_meta_records": 499,
+          "avg_reviews_per_product": 27.0
+        },
+        "Baby_Products": {
+          "review_file": "jumia/review_categories/Baby_Products.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Baby_Products.jsonl.gz",
+          "num_reviews": 2698,
+          "num_products": 263,
+          "num_meta_records": 335,
+          "avg_reviews_per_product": 10.3
+        },
+        "Sports_and_Outdoors": {
+          "review_file": "jumia/review_categories/Sports_and_Outdoors.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Sports_and_Outdoors.jsonl.gz",
+          "num_reviews": 4453,
+          "num_products": 379,
+          "num_meta_records": 452,
+          "avg_reviews_per_product": 11.7
+        },
+        "Video_Games": {
+          "review_file": "jumia/review_categories/Video_Games.jsonl.gz",
+          "meta_file": "jumia/meta_categories/meta_Video_Games.jsonl.gz",
+          "num_reviews": 1681,
+          "num_products": 177,
+          "num_meta_records": 220,
+          "avg_reviews_per_product": 9.5
+        }
+      }
+    },
+    "konga_ng": {
+      "categories": {
+        "Cell_Phones_and_Accessories": {
+          "review_file": "konga/review_categories/Cell_Phones_and_Accessories.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Cell_Phones_and_Accessories.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        },
+        "Beauty_and_Personal_Care": {
+          "review_file": "konga/review_categories/Beauty_and_Personal_Care.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Beauty_and_Personal_Care.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        },
+        "Electronics": {
+          "review_file": "konga/review_categories/Electronics.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Electronics.jsonl.gz",
+          "num_reviews": 300,
+          "num_products": 105,
+          "num_meta_records": 183,
+          "avg_reviews_per_product": 2.9
+        },
+        "Clothing_Shoes_and_Jewelry": {
+          "review_file": "konga/review_categories/Clothing_Shoes_and_Jewelry.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Clothing_Shoes_and_Jewelry.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        },
+        "Grocery_and_Gourmet_Food": {
+          "review_file": "konga/review_categories/Grocery_and_Gourmet_Food.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Grocery_and_Gourmet_Food.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 3,
+          "avg_reviews_per_product": 0.0
+        },
+        "Appliances": {
+          "review_file": "konga/review_categories/Appliances.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Appliances.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        },
+        "Home_and_Kitchen": {
+          "review_file": "konga/review_categories/Home_and_Kitchen.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Home_and_Kitchen.jsonl.gz",
+          "num_reviews": 182,
+          "num_products": 97,
+          "num_meta_records": 219,
+          "avg_reviews_per_product": 1.9
+        },
+        "Baby_Products": {
+          "review_file": "konga/review_categories/Baby_Products.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Baby_Products.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 3,
+          "avg_reviews_per_product": 0.0
+        },
+        "Sports_and_Outdoors": {
+          "review_file": "konga/review_categories/Sports_and_Outdoors.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Sports_and_Outdoors.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 3,
+          "avg_reviews_per_product": 0.0
+        },
+        "Video_Games": {
+          "review_file": "konga/review_categories/Video_Games.jsonl.gz",
+          "meta_file": "konga/meta_categories/meta_Video_Games.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        }
+      }
+    },
+    "combined": {
+      "categories": {
+        "Cell_Phones_and_Accessories": {
+          "review_file": "combined/review_categories/Cell_Phones_and_Accessories.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Cell_Phones_and_Accessories.jsonl.gz",
+          "num_reviews": 3958,
+          "num_products": 485,
+          "num_meta_records": 485,
+          "avg_reviews_per_product": 8.2
+        },
+        "Beauty_and_Personal_Care": {
+          "review_file": "combined/review_categories/Beauty_and_Personal_Care.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Beauty_and_Personal_Care.jsonl.gz",
+          "num_reviews": 11598,
+          "num_products": 447,
+          "num_meta_records": 482,
+          "avg_reviews_per_product": 25.9
+        },
+        "Electronics": {
+          "review_file": "combined/review_categories/Electronics.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Electronics.jsonl.gz",
+          "num_reviews": 8000,
+          "num_products": 570,
+          "num_meta_records": 682,
+          "avg_reviews_per_product": 14.0
+        },
+        "Clothing_Shoes_and_Jewelry": {
+          "review_file": "combined/review_categories/Clothing_Shoes_and_Jewelry.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Clothing_Shoes_and_Jewelry.jsonl.gz",
+          "num_reviews": 13267,
+          "num_products": 484,
+          "num_meta_records": 493,
+          "avg_reviews_per_product": 27.4
+        },
+        "Grocery_and_Gourmet_Food": {
+          "review_file": "combined/review_categories/Grocery_and_Gourmet_Food.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Grocery_and_Gourmet_Food.jsonl.gz",
+          "num_reviews": 383,
+          "num_products": 22,
+          "num_meta_records": 28,
+          "avg_reviews_per_product": 17.4
+        },
+        "Appliances": {
+          "review_file": "combined/review_categories/Appliances.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Appliances.jsonl.gz",
+          "num_reviews": 0,
+          "num_products": 0,
+          "num_meta_records": 0,
+          "avg_reviews_per_product": 0.0
+        },
+        "Home_and_Kitchen": {
+          "review_file": "combined/review_categories/Home_and_Kitchen.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Home_and_Kitchen.jsonl.gz",
+          "num_reviews": 13209,
+          "num_products": 580,
+          "num_meta_records": 718,
+          "avg_reviews_per_product": 22.8
+        },
+        "Baby_Products": {
+          "review_file": "combined/review_categories/Baby_Products.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Baby_Products.jsonl.gz",
+          "num_reviews": 2698,
+          "num_products": 263,
+          "num_meta_records": 338,
+          "avg_reviews_per_product": 10.3
+        },
+        "Sports_and_Outdoors": {
+          "review_file": "combined/review_categories/Sports_and_Outdoors.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Sports_and_Outdoors.jsonl.gz",
+          "num_reviews": 4453,
+          "num_products": 379,
+          "num_meta_records": 455,
+          "avg_reviews_per_product": 11.7
+        },
+        "Video_Games": {
+          "review_file": "combined/review_categories/Video_Games.jsonl.gz",
+          "meta_file": "combined/meta_categories/meta_Video_Games.jsonl.gz",
+          "num_reviews": 1681,
+          "num_products": 177,
+          "num_meta_records": 220,
+          "avg_reviews_per_product": 9.5
+        }
+      }
+    }
+  },
+  "amazon_2023_alignment": {
+    "Cell_Phones_and_Accessories": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Cell_Phones_and_Accessories.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Cell_Phones_and_Accessories.jsonl.gz"
+    },
+    "Beauty_and_Personal_Care": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Beauty_and_Personal_Care.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Beauty_and_Personal_Care.jsonl.gz"
+    },
+    "Electronics": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Electronics.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Electronics.jsonl.gz"
+    },
+    "Clothing_Shoes_and_Jewelry": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Clothing_Shoes_and_Jewelry.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Clothing_Shoes_and_Jewelry.jsonl.gz"
+    },
+    "Grocery_and_Gourmet_Food": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Grocery_and_Gourmet_Food.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Grocery_and_Gourmet_Food.jsonl.gz"
+    },
+    "Appliances": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Appliances.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Appliances.jsonl.gz"
+    },
+    "Home_and_Kitchen": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Home_and_Kitchen.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Home_and_Kitchen.jsonl.gz"
+    },
+    "Baby_Products": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Baby_Products.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Baby_Products.jsonl.gz"
+    },
+    "Sports_and_Outdoors": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Sports_and_Outdoors.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Sports_and_Outdoors.jsonl.gz"
+    },
+    "Video_Games": {
+      "amazon_download": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Video_Games.jsonl.gz",
+      "nigerian_supplement": "combined/review_categories/Video_Games.jsonl.gz"
+    }
+  }
+}
