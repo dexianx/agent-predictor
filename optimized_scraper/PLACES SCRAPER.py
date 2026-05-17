@@ -7,7 +7,7 @@ from typing import Optional
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 
-GOOGLE_API_KEY = "AIzaSyBqAkQ_1wpEKFi4lw9tsoeXpekM7QE7IBs"  # <-- Paste your NEW key here
+GOOGLE_API_KEY = ""  # <-- Paste your NEW key here
 
 CITIES = [
     "Lagos, Nigeria",
