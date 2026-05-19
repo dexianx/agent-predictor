@@ -173,7 +173,7 @@ async def simulate_review(
     llm_label = llm_display_name()
     await emit({"type": "step", "id": "llm_review",
                 "label": f"Generating review · {llm_label}",
-                "detail": "Call 1 of 2"})
+                    "detail": "Call 1 of 2"})
     review_text = ""
     async for token in call_review_stream(system_p, user_p):
         review_text += token
@@ -181,8 +181,8 @@ async def simulate_review(
 
     # ── Step 6: LLM Call 2 — rating ──────────────────────────────────────────
     await emit({"type": "step", "id": "llm_rating",
-                "label": f"Predicting rating · {llm_label}",
-                "detail": "Call 2 of 2 · single integer"})
+                "label": f"Scoring review (1–5 stars) · {llm_label}",
+                "detail": "Call 2 of 2 · numeric rating"})
     rating_prompt = build_rating_prompt(review_text, persona, signals)
     predicted = await call_rating(rating_prompt)
     if predicted is None:
