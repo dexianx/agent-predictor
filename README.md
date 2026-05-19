@@ -80,8 +80,24 @@ Use those only when you want to isolate one source.
 
 ## Rerun Or Extend Scraping
 
-The scraper collects product reviews from Jumia Nigeria and Konga, normalizes
-them to the dataset schema, and writes output to `output/`.
+The Data Junior Nigerian dataset scraper in `optimized_scraper/` collects
+product reviews from Jumia Nigeria and Konga, normalizes them to the dataset
+schema, and writes output to `output/`.
+
+## Data Junior Agent
+
+An agent workspace lives in `agents/`. It uses the OpenAI Agents SDK, LiteLLM,
+FastMCP, Firecrawl, and Pydantic for web research through MCP tools.
+
+```bash
+cd agents
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m data_junior_agent.cli chat
+```
+
+See `agents/README.md` for API key setup, model selection, tools, and tests.
 
 ## Setup
 
