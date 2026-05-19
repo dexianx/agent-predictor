@@ -74,6 +74,7 @@ def derive_signals(
         pidgin_label = "none"
 
     price_ngn = item_meta.get("price_ngn")
+    price_sensitivity = persona.get("price_sensitivity") or 0.0
 
     return {
         "rating_mean":      rating_mean,
@@ -88,6 +89,7 @@ def derive_signals(
         "pidgin_label":     pidgin_label,
         "emotion_label":    emotion_label,
         "price_ngn":        price_ngn,
+        "price_sensitivity": price_sensitivity,
         "locale":           locale,
     }
 
@@ -176,6 +178,13 @@ def build_system_prompt(persona: dict, signals: dict, cultural_block: str) -> st
     if locale == "NG" and pid_label != "none":
         pidgin_line = f"\n- Pidgin usage: {pid_label} — mirror this in your output."
 
+    price_sens = signals.get("price_sensitivity") or 0.0
+    price_awareness_line = ""
+    if price_sens > 0.3:
+        price_awareness_line = "\n- Price sensitivity: HIGH — explicitly comment on value for money relative to the price point"
+    elif price_sens > 0.1:
+        price_awareness_line = "\n- Price sensitivity: MODERATE — mention price if it stands out"
+
     system = f"""TASK: Write a single authentic product review as if you are this specific user.
 Output only the review text — no preamble, no labels, no quotes.
 
@@ -184,7 +193,7 @@ SHOPPER PROFILE:
 - Overall rating tendency: {tendency} (mean {signals['rating_mean']:.2f}★, σ={signals['rating_std']:.2f})
 - Vocabulary: {vocab}
 - Emotional tone: {emotion}
-- Target length: ~{avg_words} words (based on this user's historical review length){pidgin_line}
+- Target length: ~{avg_words} words (based on this user's historical review length){pidgin_line}{price_awareness_line}
 
 CRITICAL STYLE RULE: The review must sound like this specific shopper — their cadence,
 their level of detail, their emotional register. Do NOT write a generic review."""
@@ -206,11 +215,20 @@ def build_user_prompt(
     category = item_meta.get("category") or ""
     locale   = (signals.get("locale") or "").upper()
     currency = "$" if locale == "US" else "₦"
-    price    = item_meta.get("price_usd") if locale == "US" else item_meta.get("price_ngn")
+    if locale == "US":
+        price = item_meta.get("price_usd") or item_meta.get("price_ngn")
+    else:
+        price = item_meta.get("price_ngn")
 
     item_line = " | ".join(filter(None, [brand, title, category]))
+
+    price_section = ""
     if price:
-        item_line += f" | {currency}{price:,.0f}" if isinstance(price, (int, float)) else f" | {currency}{price}"
+        formatted = f"{currency}{price:,.0f}" if isinstance(price, (int, float)) else f"{currency}{price}"
+        price_section = f"\nPrice: {formatted}"
+
+    desc = (item_meta.get("item_description") or "").strip()
+    desc_section = f"\nProduct details: {desc[:300]}" if desc else ""
 
     avg_rating = item_meta.get("avg_rating")
     review_count = item_meta.get("review_count") or 0
@@ -233,7 +251,7 @@ WHAT OTHERS SAY ABOUT THIS ITEM:
 {others_block}
 
 ITEM TO REVIEW:
-{item_line}{item_context}{cat_note}
+{item_line}{price_section}{desc_section}{item_context}{cat_note}
 
 Write the review now:"""
 

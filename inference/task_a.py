@@ -54,11 +54,11 @@ def get_embedder():
 @dataclass
 class SimulateRequest:
     user_id: str
+    item_name: str
+    price_ngn: float
     item_id: str = ""
-    item_name: str | None = None
     item_description: str | None = None
     raw_message: str | None = None
-    price_ngn: float | None = None
 
 
 def _retrieval_query(request: SimulateRequest) -> str:
@@ -115,7 +115,7 @@ async def simulate_review(
             "brand":        "",
             "category":     "",
             "sub_category": "",
-            "price_ngn":    request.price_ngn,
+            "price_ngn":    None,
             "price_usd":    None,
             "avg_rating":   None,
             "review_count": 0,
@@ -157,6 +157,12 @@ async def simulate_review(
         if ratings:
             item_meta["avg_rating"] = round(sum(ratings) / len(ratings), 2)
             item_meta["review_count"] = len(ratings)
+
+    # Request fields are authoritative — applied last so graph/backfill cannot overwrite
+    item_meta["title"] = request.item_name
+    item_meta["price_ngn"] = request.price_ngn
+    if request.item_description:
+        item_meta["item_description"] = request.item_description
     graph_data["branch"] = branch
     await emit({"type": "graph_data", **graph_data})
 
@@ -218,11 +224,13 @@ async def simulate_review(
 
 async def _cli_main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--user-id",  required=True)
-    parser.add_argument("--item-id",  default="")
-    parser.add_argument("--item-name", default=None)
-    parser.add_argument("--message",  default=None, help="Natural language message")
-    parser.add_argument("--dry-run",  action="store_true")
+    parser.add_argument("--user-id",   required=True)
+    parser.add_argument("--item-name", required=True)
+    parser.add_argument("--price-ngn", type=float, required=True)
+    parser.add_argument("--item-id",   default="")
+    parser.add_argument("--item-description", default=None)
+    parser.add_argument("--message",   default=None, help="Natural language message")
+    parser.add_argument("--dry-run",   action="store_true")
     args = parser.parse_args()
 
     events: list[dict] = []
@@ -234,8 +242,10 @@ async def _cli_main():
 
     req = SimulateRequest(
         user_id=args.user_id,
-        item_id=args.item_id,
         item_name=args.item_name,
+        price_ngn=args.price_ngn,
+        item_id=args.item_id,
+        item_description=args.item_description,
         raw_message=args.message,
     )
     result = await simulate_review(req, collect, dry_run=args.dry_run)

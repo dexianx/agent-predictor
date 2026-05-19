@@ -1,0 +1,5 @@
+{
+  "buildCommand": "vite build --config vite.spa.config.ts",
+  "outputDirectory": "dist/spa",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
