@@ -36,6 +36,8 @@ MIN_REVIEWS_FOR_PERSONA = 3
 
 AMAZON_DATASET = "McAuley-Lab/Amazon-Reviews-2023"
 AMAZON_CONFIG_PREFIX = "raw_review_"
+AMAZON_META_CONFIG_PREFIX = "raw_meta_"
+AMAZON_RAW_BASE_URL = "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw"
 
 PIDGIN_TOKENS = frozenset(
     {
@@ -58,4 +60,3 @@ PIDGIN_TOKENS = frozenset(
         "joor",
     }
 )
-

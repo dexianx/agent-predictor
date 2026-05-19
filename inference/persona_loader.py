@@ -42,44 +42,47 @@ def load_persona(db_path: str, user_id: str) -> dict | None:
     }
 
 
-def load_featured_personas(db_path: str, limit: int = 8) -> list[dict]:
+def load_featured_personas(db_path: str, limit: int = 16) -> list[dict]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
+
+    # Always 1 NG persona (Jumia), the rest US
+    ng_rows = conn.execute(
         """
         SELECT * FROM personas
-        WHERE selected = 1 AND is_persona_eligible = 1
-        ORDER BY
-          CASE WHEN locale = 'NG' THEN 0 ELSE 1 END ASC,
-          review_count DESC
+        WHERE selected = 1 AND is_persona_eligible = 1 AND locale = 'NG'
+        ORDER BY review_count DESC
+        LIMIT 1
+        """,
+    ).fetchall()
+
+    us_limit = limit - len(ng_rows)
+    us_rows = conn.execute(
+        """
+        SELECT * FROM personas
+        WHERE selected = 1 AND is_persona_eligible = 1 AND locale = 'US'
+        ORDER BY review_count DESC
         LIMIT ?
         """,
-        (limit,),
+        (us_limit,),
     ).fetchall()
-    if not rows:
-        # Fallback: mix top NG + top US so Nigerian personas always appear
-        half = limit // 2
-        ng_rows = conn.execute(
+
+    # Top-up US from unselected pool if selected set is smaller than requested
+    if len(us_rows) < us_limit:
+        seen = {r["user_id"] for r in us_rows}
+        extra = conn.execute(
             """
             SELECT * FROM personas
-            WHERE is_persona_eligible = 1 AND locale = 'NG'
+            WHERE is_persona_eligible = 1 AND locale = 'US' AND selected = 0
             ORDER BY review_count DESC
             LIMIT ?
             """,
-            (half,),
+            (us_limit - len(us_rows),),
         ).fetchall()
-        us_rows = conn.execute(
-            """
-            SELECT * FROM personas
-            WHERE is_persona_eligible = 1 AND locale = 'US'
-            ORDER BY review_count DESC
-            LIMIT ?
-            """,
-            (limit - len(ng_rows),),
-        ).fetchall()
-        rows = list(ng_rows) + list(us_rows)
+        us_rows = list(us_rows) + [r for r in extra if r["user_id"] not in seen]
+
     conn.close()
-    return [_row_to_dict(r) for r in rows]
+    return [_row_to_dict(r) for r in list(ng_rows) + list(us_rows)]
 
 
 def search_personas(

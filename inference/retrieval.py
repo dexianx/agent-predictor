@@ -4,23 +4,84 @@ from .llm_client import call_generate_cypher
 
 DB_SCHEMA = """
 Neo4j graph schema for the review knowledge base:
-  Nodes:
-    User(id, locale, platform)
-    Review(id, text, rating, title, wordCount, timestamp, locale, platform, embedding)
-    Item(id, title, brand, category, subCategory, locale, platform)
-    Category(name)
-    Platform(name)
-  Relationships:
-    (User)-[:WROTE]->(Review)-[:ABOUT]->(Item)-[:IN_CATEGORY]->(Category)
-    (Item)-[:SOLD_ON]->(Platform)
-  Vector index: "review_embedding" on Review.embedding (384-dim cosine)
-  Useful query patterns:
-    # Get reviews for a specific item:
-    MATCH (r:Review)-[:ABOUT]->(i:Item) WHERE i.title CONTAINS $keyword RETURN r
-    # Locale-filtered reviews:
-    MATCH (u:User {locale: $locale})-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item) RETURN r, i
-    # Vector search:
-    CALL db.index.vector.queryNodes('review_embedding', 10, $vec) YIELD node AS r, score RETURN r, score
+
+Nodes:
+  User(id: str, locale: str ["US"|"NG"], platform: str)
+
+  Review(
+    id: str,
+    text: str,
+    rating: float,          -- 1.0-5.0
+    title: str,
+    wordCount: int,
+    timestamp: int,         -- Unix epoch seconds
+    locale: str,            -- "US" or "NG"
+    platform: str,          -- "amazon_us" or "jumia_ng"
+    embedding: list[float], -- 384-dim sentence embedding
+    stylometry: str,        -- JSON blob of stylometric features
+    verifiedPurchase: bool | null,
+    helpfulVote: int | null,
+    images: list[str]       -- review image URLs
+  )
+
+  Item(
+    id: str,
+    title: str,
+    brand: str,
+    store: str,
+    category: str,
+    subCategory: str,
+    locale: str,
+    platform: str,
+    priceNgn: float | null,      -- Jumia (NG) price in Naira
+    priceUsd: float | null,      -- Amazon (US) price in USD
+    avgRating: float | null,     -- stored average from source data
+    ratingCount: int | null,     -- stored count from source data
+    parentAsin: str,             -- Amazon-specific
+    childAsins: list[str],       -- Amazon-specific
+    features: list[str],
+    description: list[str],
+    imageUrl: str,
+    images: list[str],
+    categories: list[str],       -- full breadcrumb list
+    details: str,                -- JSON blob of extra key-value details
+    boughtTogether: list[str],
+    boughtTogetherCount: int
+  )
+
+  Category(name: str)
+  Platform(name: str)
+
+Relationships:
+  (User)-[:WROTE {timestamp: int}]->(Review)
+  (Review)-[:ABOUT]->(Item)
+  (Item)-[:IN_CATEGORY]->(Category)
+  (Item)-[:SOLD_ON]->(Platform)
+  (Item)-[:BOUGHT_TOGETHER]->(Item)  -- may have no data
+
+Vector index: "review_embedding" on Review.embedding (384-dim cosine)
+
+Indexes: user_id, item_id, review_id, review_locale, item_category,
+         item_parent_asin, item_store
+
+Useful query patterns:
+  -- Reviews for a specific item:
+  MATCH (r:Review)-[:ABOUT]->(i:Item {id: $item_id}) RETURN r
+
+  -- Locale-filtered reviews with price signal:
+  MATCH (u:User {locale: $locale})-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item)
+  WHERE i.priceNgn IS NOT NULL OR i.priceUsd IS NOT NULL
+  RETURN r, i.priceNgn, i.priceUsd
+
+  -- Vector search:
+  CALL db.index.vector.queryNodes('review_embedding', 10, $vec)
+  YIELD node AS r, score RETURN r, score
+
+  -- Verified-purchase filter:
+  MATCH (r:Review)-[:ABOUT]->(i:Item) WHERE r.verifiedPurchase = true RETURN r
+
+  -- Items with stored rating data (prefer over computing from reviews):
+  MATCH (i:Item) WHERE i.avgRating IS NOT NULL RETURN i.avgRating, i.ratingCount
 """
 
 # ── Cypher queries ────────────────────────────────────────────────────────────
@@ -97,16 +158,36 @@ MATCH (i:Item {id: $item_id})
 OPTIONAL MATCH (i)-[:IN_CATEGORY]->(cat:Category)
 OPTIONAL MATCH (i)<-[:ABOUT]-(r:Review)
 WITH i, cat,
-     avg(toFloat(r.rating)) AS avg_rating,
-     count(r) AS review_count
-RETURN i.title AS title, i.brand AS brand,
-       coalesce(cat.name, i.category) AS category,
-       i.price AS price_ngn,
-       round(avg_rating * 100) / 100.0 AS avg_rating,
-       review_count
+     avg(toFloat(r.rating))  AS computed_avg,
+     count(r)                AS computed_count
+RETURN
+  i.title                                                   AS title,
+  i.brand                                                   AS brand,
+  coalesce(cat.name, i.category)                            AS category,
+  i.subCategory                                             AS sub_category,
+  i.priceNgn                                                AS price_ngn,
+  i.priceUsd                                                AS price_usd,
+  coalesce(i.avgRating, round(computed_avg * 100) / 100.0)  AS avg_rating,
+  coalesce(i.ratingCount, computed_count)                   AS review_count
+"""
+
+QUERY_RESOLVE_BY_TITLE = """
+MATCH (i:Item)
+WHERE toLower(i.title) CONTAINS toLower($keyword)
+RETURN i.id AS id, i.title AS title
+ORDER BY size(i.title) ASC
+LIMIT 1
 """
 
 # ── Public helpers ────────────────────────────────────────────────────────────
+
+async def resolve_item_by_title(driver, keyword: str) -> str | None:
+    """Return the item_id of the closest title match, or None."""
+    async with driver.session() as session:
+        result = await session.run(QUERY_RESOLVE_BY_TITLE, keyword=keyword)
+        row = await result.single()
+        return row["id"] if row else None
+
 
 async def resolve_item(driver, item_id: str) -> dict | None:
     async with driver.session() as session:
@@ -139,23 +220,49 @@ async def fetch_own_reviews(
     return rows
 
 
-async def generate_retrieval_query(user_query: str, user_locale: str) -> str:
+async def generate_retrieval_query(user_query: str, user_locale: str, item_name: str = "") -> str:
     """Ask the LLM to write a Cypher query for reviews/items relevant to the user request."""
+    item_hint = f'\n  Target item name (use as primary match constraint): "{item_name}"' if item_name else ""
     prompt = f"""{DB_SCHEMA}
 
 Task: Write a Cypher READ-ONLY query to find up to 8 reviews (and their items) most relevant to:
-  User request: "{user_query}"
+  User request: "{user_query}"{item_hint}
   Target locale: {user_locale}
 
 Rules:
 - Only MATCH/CALL/RETURN — no CREATE/DELETE/SET/MERGE
-- Match items/reviews by title, brand, category, or review text as appropriate to the request
+- Match items/reviews primarily by the target item name, then brand, then exact category
 - Prefer reviews from locale="{user_locale}", then others
 - Return columns named: text, rating, locale, item_name, category
 - LIMIT 8
 - If keyword match is weak, use vector search with parameter $item_vec (list[float])
 - You may use parameter $user_locale (string) for locale filtering
-- Choose whichever query pattern best fits the request"""
+- Choose whichever query pattern best fits the request
+
+NEUTRALITY REQUIREMENTS — apply all of the following:
+
+1. RATING MIX — do not fetch only positive reviews.
+   The result set must target this distribution across 8 rows:
+     • 2 positive  (rating >= 4)
+     • 1 negative  (rating <= 2)
+     • 1 neutral   (rating = 3) from a user with a similar locale or platform
+     • remaining 4 rows: best-match regardless of rating
+   Use UNION or multiple MATCH branches with explicit WHERE r.rating conditions to enforce
+   the mix, then combine with RETURN … LIMIT 8.
+
+2. SCOPE — prioritize reviews of items with the same brand or exact category as the target.
+   Only expand to adjacent subCategories if fewer than 4 results are found at the brand/category level.
+   Pattern: MATCH (r:Review)-[:ABOUT]->(i:Item) WHERE i.title CONTAINS <item_name>
+            OR i.brand = <brand>
+   Do NOT match on generic keywords (e.g. "battery", "camera", "storage") that could surface
+   unrelated product categories.
+
+3. ANTI USER-BIAS — cap single-user dominance.
+   If the same user wrote many reviews, cap their contribution to at most 2 rows.
+   Use: WITH u, collect(r)[..2] AS capped_reviews UNWIND capped_reviews AS r
+
+4. MULTI-ITEM SPREAD — distribute across at least 2 distinct items when data allows,
+   so the LLM receives signal from more than one product's review pool."""
 
     result = await call_generate_cypher(prompt)
     return result.cypher.strip()
@@ -168,11 +275,12 @@ async def fetch_others_reviews(
     user_locale: str,
     item_vec: list[float] | None = None,
     user_query: str = "",
+    item_name: str = "",
     N: int = 5,
 ) -> list[dict]:
     # First try: LLM-generated Cypher from the user's request text
     if user_query:
-        query = await generate_retrieval_query(user_query, user_locale)
+        query = await generate_retrieval_query(user_query, user_locale, item_name=item_name)
         if query and query.upper().startswith(("MATCH", "CALL")):
             try:
                 params = {"user_locale": user_locale, "item_vec": item_vec}
@@ -207,6 +315,7 @@ async def fetch_retrieval(
     user_locale: str,
     item_vec: list[float] | None,
     user_query: str = "",
+    item_name: str = "",
     K: int = 3,
     N: int = 5,
 ) -> tuple[list[dict], list[dict], dict]:
@@ -217,7 +326,7 @@ async def fetch_retrieval(
     async with driver.session() as s2:
         others = await fetch_others_reviews(
             s2, user_id, item_id, user_locale, item_vec,
-            user_query=user_query, N=N,
+            user_query=user_query, item_name=item_name, N=N,
         )
     graph_data = _build_graph_data(user_id, target_id, own, others)
     return own, others, graph_data
@@ -243,13 +352,22 @@ def _build_graph_data(
     add_node({"id": user_id, "type": "user", "label": user_id[:14]})
     add_node({"id": item_id, "type": "item", "label": item_id[:24], "isTarget": True})
 
+    def _rating_label(r: dict) -> str:
+        v = r.get("rating")
+        if v is None:
+            return "N/R★"
+        try:
+            return f"{float(v):.1f}★"
+        except (TypeError, ValueError):
+            return "?★"
+
     for i, r in enumerate(own):
         r_id = f"own_r_{i}"
         item_node_id = f"item_{r.get('item_name', i)}"
         add_node({
             "id": r_id,
             "type": "review",
-            "label": f"{r.get('rating', '?')}★",
+            "label": _rating_label(r),
             "text": (r.get("text") or "")[:80],
             "age": r.get("age_months"),
         })
@@ -271,7 +389,7 @@ def _build_graph_data(
         add_node({
             "id": r_id,
             "type": "review",
-            "label": f"{r.get('rating', '?')}★",
+            "label": _rating_label(r),
             "text": (r.get("text") or "")[:80],
             "score": score,
         })

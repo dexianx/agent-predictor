@@ -53,7 +53,12 @@ def main(argv: list[str] | None = None) -> int:
     records = []
     if amazon_rows:
         amazon_records = persona_friendly_sample(
-            amazon_source(categories, amazon_rows),
+            amazon_source(
+                categories,
+                amazon_rows,
+                meta_pool_size=args.amazon_meta_pool_size,
+                review_scan_limit=args.amazon_review_scan_limit,
+            ),
             amazon_rows,
             seed=args.seed,
         )
@@ -113,6 +118,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a small review knowledge graph and persona DB.")
     parser.add_argument("--sample-size", type=int, default=DEFAULT_SAMPLE_SIZE)
     parser.add_argument("--amazon-max-rows", type=int, default=None)
+    parser.add_argument(
+        "--amazon-meta-pool-size",
+        type=int,
+        default=None,
+        help="Rich Amazon metadata items to preload per category before collecting matching reviews.",
+    )
+    parser.add_argument(
+        "--amazon-review-scan-limit",
+        type=int,
+        default=None,
+        help="Maximum raw Amazon review rows to scan per category while collecting metadata-backed reviews.",
+    )
     parser.add_argument("--local-max-rows", type=int, default=None)
     parser.add_argument("--nigerian-ecommerce-max-rows", type=int, default=None)
     parser.add_argument("--google-maps-max-rows", type=int, default=None)

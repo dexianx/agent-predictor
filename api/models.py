@@ -5,8 +5,9 @@ from pydantic import BaseModel, Field
 
 class SimulateRequest(BaseModel):
     user_id: str
+    item_name: str
+    price_ngn: float
     item_id: str = ""            # optional; when set, uses graph item node
-    item_name: str | None = None
     item_description: str | None = None
     raw_message: str | None = None   # natural language → LLM Cypher retrieval
 

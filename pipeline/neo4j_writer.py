@@ -13,13 +13,30 @@ ON CREATE SET u.locale = row.locale, u.platform = row.platform
 ON MATCH SET u.locale = coalesce(u.locale, row.locale)
 
 MERGE (i:Item {id: row.item_id})
-ON CREATE SET
-  i.title       = row.item_title,
-  i.brand       = row.item_brand,
-  i.category    = row.category,
-  i.subCategory = row.sub_category,
-  i.priceNgn    = row.price_ngn,
-  i.avgRating   = row.item_avg_rating,
+SET
+  i.title       = CASE WHEN row.item_title IS NOT NULL AND row.item_title <> '' THEN row.item_title ELSE coalesce(i.title, row.item_id) END,
+  i.brand       = CASE WHEN row.item_brand IS NOT NULL AND row.item_brand <> '' THEN row.item_brand ELSE coalesce(i.brand, '') END,
+  i.store       = CASE WHEN row.item_store IS NOT NULL AND row.item_store <> '' THEN row.item_store ELSE coalesce(i.store, '') END,
+  i.category    = CASE WHEN row.category IS NOT NULL AND row.category <> '' THEN row.category ELSE coalesce(i.category, '') END,
+  i.subCategory = CASE WHEN row.sub_category IS NOT NULL AND row.sub_category <> '' THEN row.sub_category ELSE coalesce(i.subCategory, '') END,
+  i.priceNgn    = coalesce(row.price_ngn, i.priceNgn),
+  i.priceUsd    = coalesce(row.price_usd, i.priceUsd),
+  i.avgRating   = coalesce(row.item_avg_rating, i.avgRating),
+  i.ratingCount = coalesce(row.item_rating_count, i.ratingCount),
+  i.parentAsin  = CASE WHEN row.parent_asin IS NOT NULL AND row.parent_asin <> '' THEN row.parent_asin ELSE coalesce(i.parentAsin, '') END,
+  i.childAsins  = CASE
+                    WHEN row.child_asin IS NOT NULL AND row.child_asin <> '' AND NOT (row.child_asin IN coalesce(i.childAsins, []))
+                    THEN coalesce(i.childAsins, []) + row.child_asin
+                    ELSE coalesce(i.childAsins, [])
+                  END,
+  i.features    = CASE WHEN size(row.item_features) > 0 THEN row.item_features ELSE coalesce(i.features, []) END,
+  i.description = CASE WHEN size(row.item_description) > 0 THEN row.item_description ELSE coalesce(i.description, []) END,
+  i.imageUrl    = CASE WHEN row.item_image_url IS NOT NULL AND row.item_image_url <> '' THEN row.item_image_url ELSE coalesce(i.imageUrl, '') END,
+  i.images      = CASE WHEN size(row.item_images) > 0 THEN row.item_images ELSE coalesce(i.images, []) END,
+  i.categories  = CASE WHEN size(row.item_categories) > 0 THEN row.item_categories ELSE coalesce(i.categories, []) END,
+  i.details     = CASE WHEN row.item_details_json IS NOT NULL AND row.item_details_json <> '{}' THEN row.item_details_json ELSE coalesce(i.details, '{}') END,
+  i.boughtTogether = CASE WHEN size(row.bought_together) > 0 THEN row.bought_together ELSE coalesce(i.boughtTogether, []) END,
+  i.boughtTogetherCount = coalesce(row.bought_together_count, i.boughtTogetherCount, 0),
   i.platform    = row.platform,
   i.locale      = row.locale
 
@@ -36,12 +53,19 @@ ON CREATE SET
   r.locale     = row.locale,
   r.platform   = row.platform,
   r.embedding  = row.embedding,
-  r.stylometry = row.stylometry_json
+  r.stylometry = row.stylometry_json,
+  r.verifiedPurchase = row.verified_purchase,
+  r.helpfulVote = row.helpful_vote,
+  r.images = row.review_images
 
 MERGE (u)-[:WROTE {timestamp: row.timestamp}]->(r)
 MERGE (r)-[:ABOUT]->(i)
 MERGE (i)-[:IN_CATEGORY]->(cat)
 MERGE (i)-[:SOLD_ON]->(plt)
+FOREACH (bt IN row.bought_together |
+  MERGE (bi:Item {id: bt})
+  MERGE (i)-[:BOUGHT_TOGETHER]->(bi)
+)
 """
 
 
@@ -51,6 +75,8 @@ INDEX_STATEMENTS = (
     "CREATE INDEX review_id IF NOT EXISTS FOR (r:Review) ON (r.id)",
     "CREATE INDEX review_locale IF NOT EXISTS FOR (r:Review) ON (r.locale)",
     "CREATE INDEX item_category IF NOT EXISTS FOR (i:Item) ON (i.category)",
+    "CREATE INDEX item_parent_asin IF NOT EXISTS FOR (i:Item) ON (i.parentAsin)",
+    "CREATE INDEX item_store IF NOT EXISTS FOR (i:Item) ON (i.store)",
     f"""
     CREATE VECTOR INDEX review_embedding IF NOT EXISTS
     FOR (r:Review) ON r.embedding
@@ -75,7 +101,20 @@ class Neo4jWriter:
 
     def reset(self) -> None:
         with self.driver.session() as session:
-            session.run("MATCH (n) DETACH DELETE n").consume()
+            while True:
+                result = session.run(
+                    """
+                    MATCH (n)
+                    WITH n LIMIT $batch_size
+                    DETACH DELETE n
+                    RETURN count(n) AS deleted
+                    """,
+                    batch_size=10_000,
+                )
+                deleted = result.single()["deleted"]
+                if deleted == 0:
+                    break
+                print(f"Deleted {deleted:,} Neo4j nodes during reset", flush=True)
 
     def write_reviews(self, records: list[ReviewRecord], batch_size: int) -> None:
         with self.driver.session() as session:

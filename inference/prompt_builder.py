@@ -88,6 +88,7 @@ def derive_signals(
         "pidgin_label":     pidgin_label,
         "emotion_label":    emotion_label,
         "price_ngn":        price_ngn,
+        "locale":           locale,
     }
 
 
@@ -203,11 +204,13 @@ def build_user_prompt(
     title    = item_meta.get("title") or "Unknown item"
     brand    = item_meta.get("brand") or ""
     category = item_meta.get("category") or ""
-    price    = item_meta.get("price_ngn")
+    locale   = (signals.get("locale") or "").upper()
+    currency = "$" if locale == "US" else "₦"
+    price    = item_meta.get("price_usd") if locale == "US" else item_meta.get("price_ngn")
 
     item_line = " | ".join(filter(None, [brand, title, category]))
     if price:
-        item_line += f" | ₦{price:,.0f}" if isinstance(price, (int, float)) else f" | ₦{price}"
+        item_line += f" | {currency}{price:,.0f}" if isinstance(price, (int, float)) else f" | {currency}{price}"
 
     avg_rating = item_meta.get("avg_rating")
     review_count = item_meta.get("review_count") or 0

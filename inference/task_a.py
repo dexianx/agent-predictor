@@ -11,7 +11,7 @@ from typing import Callable, Awaitable
 from neo4j import AsyncGraphDatabase
 
 from .persona_loader import load_persona
-from .retrieval import resolve_item, fetch_retrieval
+from .retrieval import resolve_item, resolve_item_by_title, fetch_retrieval
 from .prompt_builder import (
     derive_signals,
     get_cultural_voice_block,
@@ -58,6 +58,7 @@ class SimulateRequest:
     item_name: str | None = None
     item_description: str | None = None
     raw_message: str | None = None
+    price_ngn: float | None = None
 
 
 def _retrieval_query(request: SimulateRequest) -> str:
@@ -99,12 +100,23 @@ async def simulate_review(
     else:
         branch = "vector"
 
+    # If no item_id but we have a name, try to resolve by title so we can use
+    # the well-constrained PPR queries instead of the freeform LLM path.
+    if not request.item_id and request.item_name:
+        resolved_id = await resolve_item_by_title(driver, request.item_name)
+        if resolved_id:
+            request.item_id = resolved_id
+            item_meta = await resolve_item(driver, resolved_id)
+            branch = "ppr"
+
     if not item_meta:
         item_meta = {
-            "title":        user_query[:120] or "Unknown product",
+            "title":        request.item_name or user_query[:120] or "Unknown product",
             "brand":        "",
             "category":     "",
-            "price_ngn":    None,
+            "sub_category": "",
+            "price_ngn":    request.price_ngn,
+            "price_usd":    None,
             "avg_rating":   None,
             "review_count": 0,
         }
@@ -130,6 +142,7 @@ async def simulate_review(
         driver, request.user_id, request.item_id or "",
         persona["locale"] or "US", item_vec,
         user_query=user_query,
+        item_name=request.item_name or "",
         K=3, N=5,
     )
 
