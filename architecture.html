@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kora Task A — System Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0e0e;
+    --surface: #161616;
+    --border: #2a2a2a;
+    --text: #e2e2e2;
+    --muted: #888;
+    --primary: #d97757;
+    --code-bg: #1a1a1a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  h1 { font-size: 2rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+  h2 { font-size: 1.25rem; font-weight: 600; color: var(--primary); margin: 48px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1rem; font-weight: 600; color: #ccc; margin: 28px 0 10px; }
+  p { color: var(--muted); margin-bottom: 12px; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 40px; }
+  pre, code {
+    font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    font-size: 13px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 12px 0;
+    color: #c9d1d9;
+  }
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #c9d1d9;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 16px 0;
+  }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--surface);
+    color: #ccc;
+    font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  td {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  td code { font-size: 12px; }
+  .mermaid {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge-primary { background: rgba(217,119,87,0.15); color: var(--primary); }
+  .badge-blue { background: rgba(96,165,250,0.12); color: #60a5fa; }
+  .badge-green { background: rgba(74,222,128,0.12); color: #4ade80; }
+  .decision-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 12px 0;
+  }
+  .decision-block h4 { color: #ccc; margin-bottom: 8px; font-size: 0.9rem; font-weight: 600; }
+  ul { padding-left: 20px; color: var(--muted); }
+  ul li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Kora Task A</h1>
+<p class="subtitle">DSN × BCT LLM Agent Challenge — User Modelling System Architecture</p>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>1. System Overview</h2>
+<p>End-to-end flow from browser to LLM and back, showing the three storage layers and four Gemini calls (NL extraction, schema-aware Cypher, review text, rating).</p>
+
+<div class="mermaid">
+flowchart LR
+    Browser["🖥️ Browser<br/>(ui/)"] -- "WebSocket /ws/simulate\nJSON step/token/graph events" --> API["⚡ FastAPI\n(api/)"]
+    Browser -- "GET /personas/*" --> API
+    API -- "SQL queries" --> SQLite[("🗄️ SQLite\n25K personas")]
+    API -- "Schema-aware Cypher / Vector" --> Neo4j[("🔗 Neo4j\nKnowledge Graph")]
+    API -- "NL extract · Cypher gen · review · rating" --> Gemini["✨ Gemini 2.5 Flash\n(google-genai SDK)"]
+    SQLite --> API
+    Neo4j --> API
+    Gemini --> API
+    API --> Browser
+</div>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>2. Offline Pipeline (pipeline/)</h2>
+<p>Run once to build the Neo4j knowledge graph and SQLite persona store. Inference is read-only at runtime.</p>
+
+<div class="mermaid">
+flowchart TD
+    Raw["Raw reviews\n(Amazon / Jumia / Konga)"] --> Scraper["Scraper + Normaliser"]
+    Scraper --> ABSA["ABSA — aspect extraction\n(sentence-transformers)"]
+    ABSA --> Neo4j_Build[("Neo4j\nUser · Review · Item\nAspect · Category")]
+    Scraper --> Stylometry["Stylometry profiler\n14 metrics per user"]
+    Stylometry --> SQLite_Build[("SQLite\npersonas table\ncategory_rating_bias")]
+    Neo4j_Build -- "review_embedding\nvector index" --> VecIdx["384-dim cosine index"]
+</div>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>3. Inference Flow</h2>
+<p>Seven steps per simulation request: NL extraction and schema-aware Cypher generation are new additions.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant UI as Browser
+    participant API as FastAPI
+    participant DB as SQLite + Neo4j
+    participant LLM as Gemini 2.5 Flash
+
+    UI->>API: WS connect + {user_id, raw_message}
+    API-->>UI: step: nl_extract
+    API->>LLM: Call 0 — extract item_name/item_description from message
+    LLM-->>API: ItemExtraction {item_name, item_description}
+
+    API-->>UI: step: persona_load
+    API->>DB: SELECT * FROM personas WHERE user_id=?
+    DB-->>API: persona row + category_rating_bias
+
+    API-->>UI: step: item_resolve
+    API->>DB: MATCH (i:Item {id: $item_id}) ...
+    DB-->>API: item metadata OR null (→ vector branch)
+
+    API-->>UI: step: retrieval
+    API->>LLM: Call 1 — generate Cypher from DB schema + product context
+    LLM-->>API: RetrievalQuery {cypher: "MATCH..."}
+    API->>DB: Execute generated Cypher OR vector fallback
+    DB-->>API: own[K=3] + others[N=5]
+    API-->>UI: graph_data {nodes, edges, branch}
+
+    API-->>UI: step: prompt_build
+    Note over API: 5-block ICL assembly
+
+    API-->>UI: step: llm_review
+    API->>LLM: Call 2 — system + user prompt (streaming)
+    LLM-->>API: streaming tokens
+    API-->>UI: token × N (streamed)
+
+    API-->>UI: step: llm_rating
+    API->>LLM: Call 3 — rating prompt (structured output JSON)
+    LLM-->>API: ReviewRating {rating: 4}
+    API-->>UI: final {review_text, predicted_rating, ...}
+</div>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>4. Schema-Aware Retrieval</h2>
+
+<div class="decision-block">
+  <h4>Step 1 — Gemini generates the Cypher query</h4>
+  <p>The full DB schema is injected into the prompt. Gemini selects the best query pattern based on the product context and target locale, returning a structured <code>RetrievalQuery {cypher: "..."}</code> object via <code>response_mime_type: "application/json"</code>. No regex parsing required.</p>
+  <ul>
+    <li>Schema includes node labels, properties, relationships, and vector index name</li>
+    <li>Gemini can choose locale filtering, title CONTAINS matching, or vector search as appropriate</li>
+    <li>Output is a plain Cypher string — no markdown fences (structured output guarantee)</li>
+  </ul>
+</div>
+<div class="decision-block">
+  <h4>Step 2 — Execute with fallback chain</h4>
+  <p>The generated query runs with params <code>$user_locale</code> and <code>$item_vec</code>. If it returns no rows or throws, the pipeline falls through:</p>
+  <ul>
+    <li><strong>Fallback A</strong> — <code>QUERY_B</code>: locale-weighted Cypher using known <code>item_id</code> (N=5)</li>
+    <li><strong>Fallback B</strong> — vector index: embed <code>item_name + description</code> via <code>all-MiniLM-L6-v2</code>, cosine threshold &gt; 0.72</li>
+  </ul>
+</div>
+<div class="decision-block">
+  <h4>Branch label in UI</h4>
+  <ul>
+    <li><code>"ppr"</code> → badge shows <strong>PPR Retrieval</strong></li>
+    <li><code>"vector"</code> → badge shows <strong>Semantic Search</strong></li>
+  </ul>
+</div>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>5. WebSocket Event Schema</h2>
+
+<table>
+  <tr><th>type</th><th>Fields</th><th>Description</th></tr>
+  <tr><td><code>step</code></td><td>id, label, detail?</td><td>Progress milestone — animates agent steps rail in UI</td></tr>
+  <tr><td><code>token</code></td><td>text</td><td>Streaming token from Gemini Call 1 — appended to review text</td></tr>
+  <tr><td><code>graph_data</code></td><td>branch, nodes[], edges[]</td><td>Knowledge-graph subgraph for Neo4j NVL Canvas visualisation</td></tr>
+  <tr><td><code>final</code></td><td>user_id, item_id, review_text, predicted_rating, locale, retrieval_branch</td><td>Terminal event — closes connection after delivery</td></tr>
+  <tr><td><code>error</code></td><td>message</td><td>Fatal error — connection closes after delivery</td></tr>
+</table>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>6. Knowledge Graph Data Model</h2>
+
+<div class="mermaid">
+graph LR
+    U["User\nid, locale, platform"] -- WROTE --> R["Review\ntext, rating, wordCount\ntimestamp, locale"]
+    R -- ABOUT --> I["Item\nid, title, brand\ncategory, price"]
+    I -- IN_CATEGORY --> C["Category\nname"]
+    R -- HAS_ASPECT --> A["Aspect\nname, sentiment"]
+    U -- IN_LOCALE --> L["Locale\ncode"]
+    I -- ON_PLATFORM --> P["Platform\nname"]
+</div>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>7. ICL Prompt Structure (5 Blocks)</h2>
+
+<table>
+  <tr><th>Block</th><th>Source</th><th>Content</th></tr>
+  <tr><td>A — Persona profile</td><td>SQLite</td><td>Rating stats, stylometry labels, word-count target</td></tr>
+  <tr><td>B — Style exemplars</td><td>Neo4j Query A</td><td>User's own K past reviews with item + age</td></tr>
+  <tr><td>C — Content grounding</td><td>Neo4j Query B / vector</td><td>N others' reviews on target item, locale-tagged</td></tr>
+  <tr><td>D — Item metadata</td><td>Neo4j item lookup</td><td>Name, brand, category, price, avg rating</td></tr>
+  <tr><td>E — Cultural voice</td><td>Static (NG only)</td><td>Pidgin patterns, price-sensitivity, authenticity framing</td></tr>
+</table>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>8. UI Component Tree</h2>
+
+<pre>
+ChatPage (c.$threadId.tsx)
+├── Sidebar → SidebarContent
+│   ├── PersonaSearch         ← search 25K SQLite personas, pin to session
+│   ├── Persona list (real SQLite users, featured from GET /personas/featured)
+│   │   ├── click row → setPersona() (apply immediately)
+│   │   └── ↗ button → PersonaDetailModal (slide-in sheet)
+│   └── Thread list
+├── MessageView (per message)
+│   ├── AgentSteps            ← animated rail + pulsing Bot icon
+│   ├── GraphView             ← Neo4j NVL Canvas (hierarchical layout, 420px)
+│   │                           badge: "PPR Retrieval" | "Semantic Search"
+│   └── ReviewCard            ← review text + star rating
+└── Composer                  ← natural language product description input
+</pre>
+
+<!-- ──────────────────────────────────────────────────── -->
+<h2>9. Key Architectural Decisions</h2>
+
+<div class="decision-block">
+  <h4>Gemini 2.5 Flash + <code>google-genai</code> SDK — not GPT-4 or Claude</h4>
+  <p>Flash's speed-to-quality ratio suits the four-call pattern (NL extract, Cypher gen, review text, rating integer) at low latency. The new <code>google-genai</code> SDK enables enforced structured outputs via <code>response_mime_type: "application/json"</code> + Pydantic schema — eliminating regex parsing and <code>finish_reason=2</code> crashes. The model's instruction-following is strong enough for the 5-block ICL context.</p>
+</div>
+
+<div class="decision-block">
+  <h4>Separate rating call (Call 2)</h4>
+  <p>Asking the LLM to produce both review text and a rating in one pass produces inconsistent star calibration — the text often contradicts the number. Separating the calls lets Call 2 see the full review and explicitly reference the user's historical mean, producing ratings that track the persona's calibration curve.</p>
+</div>
+
+<div class="decision-block">
+  <h4>WebSocket over SSE</h4>
+  <p>The <code>graph_data</code> event is a large structured JSON payload (nodes + edges). SSE is text-only and would require JSON escaping overhead. WebSocket supports binary framing, bidirectional flow (useful for future stop signals), and keeps a single connection open for all event types without multiplexing.</p>
+</div>
+
+<div class="decision-block">
+  <h4>SQLite for persona stats, Neo4j for graph traversal</h4>
+  <p>Stylometry and rating stats are point-lookups by user_id — perfect for SQLite at sub-millisecond latency. Graph traversal (PPR, locale-weighted scoring, category hops) requires the query language expressiveness of Cypher, which SQLite cannot replicate efficiently at this scale.</p>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    themeVariables: {
+      primaryColor: "#d97757",
+      primaryTextColor: "#e2e2e2",
+      primaryBorderColor: "#2a2a2a",
+      lineColor: "#888",
+      secondaryColor: "#161616",
+      tertiaryColor: "#1a1a1a",
+      background: "#0e0e0e",
+      mainBkg: "#161616",
+      nodeBorder: "#2a2a2a",
+      clusterBkg: "#161616",
+      titleColor: "#e2e2e2",
+      edgeLabelBackground: "#1a1a1a",
+      fontFamily: "ui-monospace, monospace",
+      fontSize: "13px",
+    },
+  });
+</script>
+</body>
+</html>

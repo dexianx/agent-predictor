@@ -9,3 +9,5 @@ __pycache__/
 .mypy_cache/
 .venv/
 agents/.venv/
+
+cred.txt

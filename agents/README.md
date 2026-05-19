@@ -44,7 +44,7 @@ size errors on a large research task.
 slow site cannot make the agent loop until it hits `AGENT_MAX_TURNS`.
 
 Gemini can be used later by setting `GEMINI_API_KEY` and a Gemini LiteLLM model
-string such as `AGENT_MODEL="gemini/gemini-3.1-flash"`.
+string such as `AGENT_MODEL="gemini/gemini-2.5-flash"` (or `gemini/gemini-3-flash-preview`).
 
 ## Commands
 

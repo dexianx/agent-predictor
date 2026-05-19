@@ -40,6 +40,36 @@ reviews = list(load_reviews("Baby_Products"))
 print(len(reviews), reviews[0])
 ```
 
+## Build The Knowledge Graph
+
+The graph/persona ingestion pipeline lives in `pipeline/`. It loads a
+deterministic small sample from Amazon Reviews 2023, local Jumia/Konga combined
+files, and the Nigerian Google Maps CSVs, then writes:
+
+- Neo4j nodes/relationships plus a 384-dim review vector index
+- `personas.db` with per-user persona statistics and category rating bias rows
+
+Quick local smoke test without Neo4j or model downloads:
+
+```bash
+python -m pipeline.run_pipeline \
+  --sample-size 50 \
+  --amazon-max-rows 0 \
+  --skip-neo4j \
+  --use-hash-embedder \
+  --sqlite-path /tmp/personas-smoke.db
+```
+
+Default graph load:
+
+```bash
+docker compose up -d neo4j
+python -m pipeline.run_pipeline --sample-size 5000 --reset-neo4j
+```
+
+See `pipeline/README.md` for setup, scale-up flags, and Neo4j visualization
+queries.
+
 To train alongside Amazon 2023, concatenate your Amazon category file with:
 
 ```text
