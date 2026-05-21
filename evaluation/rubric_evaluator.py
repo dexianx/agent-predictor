@@ -15,7 +15,8 @@ class RubricResult:
     rmse_heldout_user: float | None
     rmse_persona_category: float | None
     rmse_persona_mean: float | None
-    n_references: int
+    mae_heldout_user: float | None = None
+    n_references: int = 0
     reference_source: str = ""
     notes: str = ""
 
@@ -43,6 +44,9 @@ class RubricSummary:
             ),
             "rmse_heldout_user": macro_rmse(
                 [case.rmse_heldout_user for case in self.cases if case.rmse_heldout_user is not None]
+            ),
+            "mae_heldout_user": macro_mae(
+                [case.mae_heldout_user for case in self.cases if case.mae_heldout_user is not None]
             ),
             "rmse_proxy_mean": macro_rmse(
                 [case.rmse_proxy_mean for case in self.cases if case.rmse_proxy_mean is not None]
@@ -85,7 +89,20 @@ def evaluate_rubric(
         if (record.get("text") or "").strip()
     ]
     if not refs:
-        return RubricResult(0.0, 0.0, None, None, None, None, None, None, 0, reference_source, "no reference text")
+        return RubricResult(
+            rouge_l_max=0.0,
+            rouge_l_mean=0.0,
+            bertscore_f1_max=None,
+            bertscore_f1_mean=None,
+            rmse_proxy_mean=None,
+            rmse_heldout_user=None,
+            rmse_persona_category=None,
+            rmse_persona_mean=None,
+            mae_heldout_user=None,
+            n_references=0,
+            reference_source=reference_source,
+            notes="no reference text",
+        )
 
     pred_text = (predicted_text or "").strip()
     rouge_scores = [_rouge_l_f1(pred_text, ref["text"]) for ref in refs]
@@ -97,6 +114,11 @@ def evaluate_rubric(
     persona_mean = _as_float((persona or {}).get("rating_mean"))
     persona_category = _persona_category_mean(persona or {}, category)
 
+    mae_heldout = (
+        abs(pred_rating - heldout_rating)
+        if pred_rating is not None and heldout_rating is not None
+        else None
+    )
     return RubricResult(
         rouge_l_max=max(rouge_scores),
         rouge_l_mean=_mean(rouge_scores),
@@ -106,6 +128,7 @@ def evaluate_rubric(
         rmse_heldout_user=_rmse_single(pred_rating, heldout_rating),
         rmse_persona_category=_rmse_single(pred_rating, persona_category),
         rmse_persona_mean=_rmse_single(pred_rating, persona_mean),
+        mae_heldout_user=mae_heldout,
         n_references=len(refs),
         reference_source=reference_source,
     )
@@ -116,6 +139,13 @@ def macro_rmse(errors: list[float | None]) -> float | None:
     if not values:
         return None
     return math.sqrt(sum(value * value for value in values) / len(values))
+
+
+def macro_mae(errors: list[float | None]) -> float | None:
+    values = [value for value in errors if value is not None]
+    if not values:
+        return None
+    return sum(abs(v) for v in values) / len(values)
 
 
 def _bertscore_f1(predicted_text: str, refs: list[str]) -> list[float]:

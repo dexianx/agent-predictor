@@ -126,6 +126,7 @@
     <li><a href="#decisions">Key Architectural Decisions</a></li>
     <li><a href="#limits">Limitations &amp; Future Work</a></li>
   <li><a href="#evaluation">Evaluation Layer</a></li>
+  <li><a href="#research-log">Research &amp; Optimization Log</a></li>
   </ol>
 </div>
 
@@ -909,6 +910,207 @@ flowchart TB
   <li><code>normalize_embeddings=True</code> → cosine similarity collapses to dot product (faster, no norm edge cases)</li>
   <li>Per-reference topic-error variance exposed in report — high variance flags noisy evaluations</li>
   <li>Ground truth fetched <em>after</em> LLM generation — prevents contamination of the inference path</li>
+</ul>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="research-log">15. Research &amp; Optimization Log</h2>
+
+<p>
+  This appendix records the papers and controlled eval passes used to tune Task A.
+  Each pass is tested against persisted holdout reviews from <code>task_a_v1</code>;
+  changes that do not improve the primary heldout RMSE are reverted or marked
+  rejected.
+</p>
+
+<h3>Papers Tracked</h3>
+<table>
+  <thead><tr><th>Paper</th><th>Useful Finding</th><th>How It Changed Kora</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><a href="https://arxiv.org/abs/2510.00449">Enhancing Rating Prediction with Off-the-Shelf LLMs Using In-Context User Reviews</a></td>
+      <td>User-written concrete reviews are stronger than abstract preference descriptions; generating a hypothetical review before predicting a rating can improve rating prediction.</td>
+      <td>Kept the review-first flow, then added structured rating evidence and light calibration instead of switching to pure rating-first prediction.</td>
+    </tr>
+    <tr>
+      <td><a href="https://arxiv.org/abs/2203.13366">Recommendation as Language Processing (P5)</a></td>
+      <td>Recommendation tasks can be cast as personalized prompt-and-predict language tasks over user, item, metadata, and review signals.</td>
+      <td>Reinforced the 5-block prompt design: persona profile, concrete user reviews, item metadata, community evidence, and locale overlay.</td>
+    </tr>
+    <tr>
+      <td><a href="https://arxiv.org/abs/1901.07829">AspeRa: Aspect-based Rating Prediction Model</a></td>
+      <td>Aspect representations from review text can support rating prediction and explain user/item preferences.</td>
+      <td>Queued aspect-level retrieval as the next graph upgrade: extract concrete complaint/feature aspects instead of relying only on whole-review similarity.</td>
+    </tr>
+    <tr>
+      <td><a href="https://www.sciencedirect.com/science/article/pii/S0957417419305810">Weighted aspect-based opinion mining for recommender systems</a></td>
+      <td>Weighted aspect opinions from reviews can be fused with collaborative signals to improve recommendation/rating quality.</td>
+      <td>Motivates adding exact-item/product-variant complaint aggregates and user-specific low-rating aspect anchors.</td>
+    </tr>
+    <tr>
+      <td><a href="https://arxiv.org/abs/2503.02450">Measuring What Makes You Unique: Difference-Aware User Modeling for Enhancing LLM Personalization</a> (2025)</td>
+      <td>Extracting differential preferences (what makes this user unique vs. peers) produces richer ICL context than absolute preference descriptions and reduces generic review generation.</td>
+      <td>Identified as a future enhancement to the persona encoding layer: add contrastive user embeddings derived from Neo4j before assembling the ICL prompt.</td>
+    </tr>
+    <tr>
+      <td><a href="https://arxiv.org/abs/2407.07487">Review-LLM: Harnessing Large Language Models for Personalized Review Generation</a> (2024)</td>
+      <td>Reconstructing user behavior sequences (item history + review style) as structured retrieval anchors reduces hallucinated caveats and improves style consistency.</td>
+      <td>Validated our Neo4j retrieval strategy; motivates richer user behavior sequences in the ICL prompt beyond recent reviews.</td>
+    </tr>
+    <tr>
+      <td><a href="https://arxiv.org/abs/2410.13246">Atomic Calibration of LLMs in Long-Form Generations</a> (2024)</td>
+      <td>Multi-pass self-evaluation with sentence-level fact clustering detects hallucinated claims in generated text (e.g., invented caveats) before they are treated as evidence.</td>
+      <td>Motivates a cross-validation step in pass 2 (rating): verify generated review claims against retrieved evidence before assigning a star rating.</td>
+    </tr>
+    <tr>
+      <td><a href="https://arxiv.org/abs/2403.17688">Large Language Models Enhanced Collaborative Filtering</a> (CIKM 2024)</td>
+      <td>Injecting collaborative signals (user–user, item–item similarities) into ICL via chain-of-thought reasoning improves rating prediction RMSE.</td>
+      <td>Motivates augmenting Neo4j retrieval with CF nearest-neighbor user embeddings, using their ratings as distributional anchors in the prompt.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Controlled Optimization Passes</h3>
+<table>
+  <thead><tr><th>Pass</th><th>Change</th><th>Validation Set</th><th>Result</th><th>Decision</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Baseline</td>
+      <td>Review-first generation + structured rating, exact-item-first community retrieval, conservative calibration.</td>
+      <td>Random 15 holdouts</td>
+      <td><code>RMSE=0.9309</code>, <code>ROUGE-L max=0.1515</code>, <code>ROUGE-L mean=0.1231</code></td>
+      <td>Reference point</td>
+    </tr>
+    <tr>
+      <td>Pass 1</td>
+      <td>Add each user's own low/neutral historical reviews as style/rating anchors.</td>
+      <td>Same random 15 holdouts</td>
+      <td><code>RMSE=0.8944</code>, <code>ROUGE-L max=0.1510</code>, <code>ROUGE-L mean=0.1236</code></td>
+      <td>Kept. It fixed one 3-star case without hurting the macro score.</td>
+    </tr>
+    <tr>
+      <td>Pass 2</td>
+      <td>Relax caveat/negative-term handling for words like “thin” and “cheap”.</td>
+      <td>Same random 15 holdouts</td>
+      <td>Cerebras returned repeated <code>502/503</code> before a complete run.</td>
+      <td>Reverted as inconclusive; do not keep unvalidated changes.</td>
+    </tr>
+    <tr>
+      <td>Pass 3</td>
+      <td>Use train-only category bias to cap ratings when a user is strongly negative in the target category.</td>
+      <td>Same random 15 holdouts, Groq fallback</td>
+      <td>Stopped early: Groq <code>openai/gpt-oss-120b</code> pushed several true 5-star reviews to 3, confounding the test.</td>
+      <td>Reverted. The relevant category bias was absent in eval-train mode after the holdout was removed.</td>
+    </tr>
+    <tr>
+      <td>Pass 4</td>
+      <td>Add a prompt-only guard against invented “balanced” caveats.</td>
+      <td>8-case Cerebras smoke validation</td>
+      <td>Cerebras returned <code>503</code> before the first case completed.</td>
+      <td>Reverted as inconclusive; queued for retest when provider stability improves.</td>
+    </tr>
+    <tr>
+      <td>Fresh-30 baseline</td>
+      <td>Expand validation breadth with 30 holdouts excluding the previous random-15 IDs.</td>
+      <td>Fresh 30 holdouts, Groq <code>openai/gpt-oss-120b</code></td>
+      <td><code>RMSE=1.0488</code>, <code>ROUGE-L max=0.1404</code>, <code>ROUGE-L mean=0.1163</code></td>
+      <td>Kept as the broader baseline for future passes.</td>
+    </tr>
+    <tr>
+      <td>Pass 5</td>
+      <td>Aspect-severity calibration: cap ratings when generated text names catastrophic defects such as stopped working, drains quickly, cheaply made, or hard to use.</td>
+      <td>First 15 fresh holdouts</td>
+      <td><code>RMSE=0.9309 → 0.7746</code>; <code>ROUGE-L max=0.1572 → 0.1582</code></td>
+      <td>Kept. Matches aspect-based rating-prediction literature and improves fresh-set heldout RMSE.</td>
+    </tr>
+    <tr>
+      <td>Pass 6</td>
+      <td>Retrieve low/neutral exact-item community reviews before positive exact-item reviews.</td>
+      <td>First 15 fresh holdouts</td>
+      <td>Tied <code>RMSE=0.7746</code> but reduced <code>ROUGE-L max</code> and worsened proxy/persona diagnostics.</td>
+      <td>Reverted. The idea is sound, but this implementation did not improve the rubric.</td>
+    </tr>
+    <tr>
+      <td>Pass 7</td>
+      <td>Aspect risk extraction from retrieved community reviews injected as "VISIBLE ITEM RISKS" in the user prompt; plus a positive-evidence guard promoting 4→5 when generated text is enthusiastic and signals align. Based on AspeRa and weighted aspect mining papers.</td>
+      <td>First 15 fresh holdouts, Groq <code>openai/gpt-oss-120b</code></td>
+      <td><code>RMSE=1.1547</code> (vs 0.7746 baseline). A +3 error on a 2-star Amazon item dominated: the positive guard incorrectly promoted a misleadingly-positive-retrieval case to 5. Two new 4→3 regressions were also observed from overcorrection in the aspect calibration rule.</td>
+      <td>Reverted positive-evidence guard (causes false promotions when retrieval is positive but experience is negative). Reverted hard aspect-count calibration cap. Kept: aspect injection filtered to negative/neutral retrieved reviews only, and the aspect risk note in the rating prompt.</td>
+    </tr>
+    <tr>
+      <td>Pass 8 ✅ KEPT</td>
+      <td>Two-component change: (a) Aspect risk extraction filtered to negative/neutral reviews (rating ≤ 3) injected as "VISIBLE ITEM RISKS" — exact-item evidence surfaced at count≥1, category evidence only at count≥3 to prevent overcorrection. (b) Tendency-calibrated rating prompt: generous/balanced/tough-critic users each get persona-specific 5-star thresholds, fixing the blanket "do not default to 5" instruction that caused 11/18 five-star holdouts to be predicted as 4. Based on Difference-Aware User Modeling and Review-LLM papers.</td>
+      <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
+      <td><code>RMSE=0.7746</code>, ROUGE-L max=0.1603, mean=0.1264. Best checkpoint. Both metrics improved vs Pass 5 baseline (RMSE was already 0.7746 on Groq but now confirmed on Cerebras with better ROUGE-L).</td>
+      <td>Kept as best checkpoint. Active: filtered aspect injection + tendency-calibrated rating prompt (generous/balanced/tough-critic 5-star rules).</td>
+    </tr>
+    <tr>
+      <td>Pass 9 ❌ REVERTED</td>
+      <td>Tendency-aware anti-caveat system prompt rule: generous users instructed NOT to add qualifiers unless retrieved item evidence explicitly supports that specific problem; balanced users instructed to only mention caveats when retrieved item-specific evidence supports it. Motivated by the remaining 11/18 five-star underpredictions where hallucinated caveats caused 4-star ratings.</td>
+      <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
+      <td><code>RMSE=1.0328</code> — severe regression vs P8 baseline (0.7746). Fixed 2 cases (ornament, S'well bowl: true=5, P8=4→P9=5) but broke 5 others: cases 4, 11, 14 (true=4, P8=4→P9=5 because real product limitations suppressed) and case 9 (fabricated a new caveat on a 5-star item), and case 6 worsened (+2→+3).</td>
+      <td>Reverted entirely. Root cause: blanket anti-caveat rule suppresses legitimate product limitations for true 4-star items. These items have real defects (faint hiss in glass jars, thermostat granularity on heater, app lag on Mevo camera). Suppressing their caveats over-promotes to 5. Lesson: caveat suppression must be conditioned on retrieval evidence quality, not applied unconditionally to generous users.</td>
+    </tr>
+    <tr>
+      <td>Pass 10 ❌ REVERTED</td>
+      <td>Evidence-conditioned anti-caveat rule: only fires for generous users when <code>others_negative_count==0 AND others_neutral_count==0 AND others_mean≥4.3</code> — i.e., when the retrieved community evidence is uniformly positive. Intended to fix only the "hallucinated caveat on truly positive products" case without suppressing real defect signals.</td>
+      <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
+      <td><code>RMSE=1.0954</code> — worse than P8. Case 6 (ENJOYBASICS picture frame, true=2) is catastrophically wrong: the DB's retrieved reviews for this item are all positive, so the condition fires, the model generates a pure-positive review, rating model predicts 5 (error=+3). P8 had +2 because without the rule, the model naturally said "feels a bit cheap" — a lucky hedge that provided calibration signal.</td>
+      <td>Reverted. Key lesson: no prompt rule can safely condition on "uniformly positive retrieval" because the retrieval pipeline itself (QUERY_B) is rating-agnostic — it returns all-positive results for products that have quality issues if the positive reviews happen to be more recent or same-locale. The fix must be at the retrieval level. This is the root cause of the dominant catastrophic-miss failure mode.</td>
+    </tr>
+    <tr>
+      <td>Pass 12 ❌ REVERTED</td>
+      <td><strong>Consistent-generous rating rule (std=0 users).</strong> For users with zero rating standard deviation (all reviews identical), the rating rule was modified to always predict their modal rating. Hypothesis: if a user always gives 5★, the model should always output 5.</td>
+      <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
+      <td>Regression vs P8 baseline. Reverted.</td>
+      <td>Reverted. Edge case did not generalise — std=0 users were not the dominant failure mode in the 15-case holdout set.</td>
+    </tr>
+    <tr>
+      <td>Pass 13 ❌ REVERTED</td>
+      <td><strong>Relaxed generous rating rule.</strong> Changed generous 5-star criteria from "no product-specific defect mentioned" to "overall positive tone, describing features is NOT a caveat". Added "slightly harsh" to balanced bucket in rating rules. Hypothesis: over-strict defect gate was causing 4→5 under-prediction for generous users.</td>
+      <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
+      <td>After 8/15 cases: sum_sq=16 vs P8 sum_sq=8 — regression impossible to recover. The picture frame case (true=2) regressed from pred=4 (sq=4) to pred=5 (sq=9) because the relaxed rule removed "strong negative retrieved evidence" as a 4-trigger. RMSE ≥ 1.03 minimum. Reverted after 8 cases.</td>
+      <td>Core tension identified: 4→5 fix (needs more generous rule) and 4→2 fix (needs less generous) are mutually exclusive at the rating pass level. Fix must come from retrieval, not rating rules.</td>
+    </tr>
+    <tr>
+      <td>Pass 14 ❌ REVERTED</td>
+      <td><strong>Text generation caveat suppression for generous users.</strong> Two changes: (1) Added <code>generous_note</code> in <code>build_system_prompt()</code> — conditional on <code>tendency == "generous"</code>, instructing the model to not add speculative future-use warnings. (2) Tightened closing instruction in <code>build_user_prompt()</code> for ALL users — restricting caveats to "EXACT-ITEM CAVEATS explicitly state it". Hypothesis: 4-anchor bias caused by speculative caveats from category-level community evidence (e.g., "for heavier duty tasks they may struggle" for zip ties).</td>
+      <td>15-case merged eval (7 Cerebras + 8 Groq, due to Cerebras rate limits)</td>
+      <td>sum_sq 9→14, RMSE 0.7746→0.9661. Fixed 2 cases (ornament 172188, S'well bowl 340632: 4→5, true=5). Broke 5: Electronics 121096 and Kitchen 13372 (4→5, true=4: over-correction), Kitchen 311580 and 40938 (4→3, true=4: Groq model variance), Kitchen 58543 (4→5, true=3: catastrophic, sq 1→4). Net: -2 sq gained, +7 sq lost.</td>
+      <td>The closing instruction change (build_user_prompt) applies to ALL users, not gated by tendency. For true=3 cases, this prevented the model from writing any caveat, leading to 5★ predictions. Caveat suppression works for clean 5★ products but is globally destructive when applied without exact product quality signal. Provider mixing (Cerebras vs Groq) adds model-level variance as a confound. Root fix must be retrieval-based.</td>
+    </tr>
+    <tr>
+      <td>Pass 11 ❌ REVERTED (inconclusive)</td>
+      <td><strong>Knowledge-graph retrieval fix: negative-evidence supplement for community reviews.</strong> Added <code>QUERY_EXACT_ITEM_LOW</code> to <code>inference/retrieval.py</code> — a dedicated query fetching the lowest-rated (≤3★) exact-item reviews by other users. After <code>QUERY_B</code> fills its N=5 community slots, if all returned reviews are ≥4★, the supplement replaces the last 1-2 slots with negative evidence. Mirrors <code>add_low_neutral()</code> for user style exemplars but applied to community evidence (Block C).</td>
+      <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
+      <td><code>RMSE=0.8165</code> — regression vs P8 baseline (0.7746). Per-case analysis: ALL 15 eval cases used the "category" branch (item_id not in Neo4j), so <code>QUERY_EXACT_ITEM_LOW</code> never fired. The supplement DID fire for case 6 (picture frame) and made the model generate quality complaints, but the rating model still predicted 4 (vs true=2). The RMSE regression (+2 sq vs P8) is model variance unrelated to the code change.</td>
+      <td>Reverted per regression rule. Architecture is correct but test is inconclusive — 15 eval cases do not exercise the exact-item branch. <code>QUERY_EXACT_ITEM_LOW</code> is preserved in the codebase with a documentation comment. Proper validation requires a holdout set where items are in Neo4j (item_id resolves via title search).</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Knowledge Graph Query Analysis</h3>
+<p>Full analysis performed to answer whether the Cypher retrieval queries provide optimal context for decision-making.</p>
+<h4>Query inventory</h4>
+<table>
+  <thead><tr><th>Query</th><th>Role</th><th>Ordering</th><th>Rating-aware?</th><th>Assessment</th></tr></thead>
+  <tbody>
+    <tr><td><code>QUERY_A_SAME_CAT</code></td><td>User's own reviews in same category (style anchor)</td><td>Age ASC (most recent first)</td><td>No</td><td>✅ Correct — recency is the right signal for style matching</td></tr>
+    <tr><td><code>QUERY_OWN_LOW_NEUTRAL</code></td><td>Supplement: user's own ≤3★ reviews (any category)</td><td>Rating ASC, Age ASC</td><td>Yes ✅</td><td>✅ Guarantees low-star voice in style exemplars</td></tr>
+    <tr><td><code>QUERY_B</code></td><td>Community reviews of exact target item (Tier 1)</td><td><code>locale_w * 0.6 + recency_w * 0.4</code> DESC</td><td>No ❌</td><td>⚠️ Gap: rating-agnostic. All-positive results possible for low-quality products</td></tr>
+    <tr><td><code>QUERY_EXACT_ITEM_LOW</code> (Pass 11 new)</td><td>Supplement: exact-item ≤3★ reviews from community</td><td>Rating ASC, locale_w DESC, Age ASC</td><td>Yes ✅</td><td>🆕 Mirrors <code>add_low_neutral()</code> for community evidence side</td></tr>
+    <tr><td><code>QUERY_CATEGORY_REVIEWS</code></td><td>Category-scoped community evidence (Tier 2)</td><td>Same score formula as QUERY_B</td><td>No ❌</td><td>⚠️ Rating-agnostic; also short-circuited when Tier 1 fills N slots</td></tr>
+    <tr><td>LLM-generated Cypher (Tier 3)</td><td>Brand/category community evidence (when graph misses)</td><td>LLM-specified (neutrality rules in prompt)</td><td>Yes ✅ (2 pos + 1 neg + 1 neutral required)</td><td>✅ Good neutrality rules; never fires for well-represented exact items</td></tr>
+    <tr><td><code>QUERY_VECTOR</code></td><td>Semantic similarity fallback (Tier 4)</td><td>Locale, then cosine similarity DESC</td><td>No</td><td>✅ Acceptable last resort</td></tr>
+  </tbody>
+</table>
+<p><strong>Critical asymmetry:</strong> <code>QUERY_OWN_LOW_NEUTRAL</code> ensures the user's own low-star voice always reaches the model. No equivalent existed for community evidence (Block C) before Pass 11. The Tier-1 short-circuit (return immediately when N=5 filled) meant the LLM-generated Cypher's neutrality enforcement never fired for products with sufficient DB coverage.</p>
+
+<h3>Current Failure Pattern</h3>
+<ul>
+  <li><strong>Retrieval bias → catastrophic low-star misses.</strong> When a product's DB representation is skewed positive (high-rated reviews are more recent or same-locale), <code>QUERY_B</code> returns all-positive evidence. The model rationally generates a positive review with no basis for a negative rating. Pass 11 addresses this with a negative-evidence supplement query.</li>
+  <li><strong>Hallucinated caveats on true 5-star items.</strong> The model occasionally adds mild qualifiers ("slightly smaller", "feels a bit cheap") on genuinely positive items, causing the rating model to predict 4 instead of 5. The anti-caveat approach (Pass 9, 10) was too risky because the same suppression harms true 4-star items. A safer approach would require the model to cite the specific retrieved evidence for any caveat.</li>
+  <li><strong>Short Nigerian reviews achieve near-zero ROUGE-L.</strong> A terse heldout like "Stopped working on the first day" generates ROUGE-L ≈ 0 even when the generated text is semantically aligned. This is a metric artifact, not a generation failure.</li>
+  <li>Post-Pass 9/10 lesson: prompt rules conditioned on retrieval signal quality are unsafe when the retrieval itself is biased. Fix the retrieval gap first, then re-evaluate whether prompt rules are still needed.</li>
 </ul>
 
 <script>

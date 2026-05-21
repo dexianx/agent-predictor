@@ -117,6 +117,13 @@ class ReviewRating(BaseModel):
     rating: int  # 1–5
 
 
+class CalibratedReviewRating(BaseModel):
+    rating: int  # 1–5
+    confidence: float = 0.5
+    evidence_used: list[str] = []
+    calibration_reason: str = ""
+
+
 # ── Gemini backends ───────────────────────────────────────────────────────────
 
 async def _gemini_review_stream(system: str, user_prompt: str) -> AsyncIterator[str]:
@@ -242,6 +249,26 @@ async def call_rating(prompt: str) -> int | None:
         return max(1, min(5, int(parsed.rating)))
     except Exception:
         return None
+
+
+async def call_calibrated_rating(prompt: str) -> dict | None:
+    """Structured rating with evidence for calibration/debugging."""
+    if _uses_openai_compat():
+        parsed = await _openai_compat_structured(prompt, CalibratedReviewRating)
+    else:
+        parsed = await _gemini_structured(prompt, CalibratedReviewRating)
+    if parsed is None:
+        return None
+    try:
+        rating = max(1, min(5, int(parsed.rating)))
+    except Exception:
+        return None
+    return {
+        "rating": rating,
+        "confidence": max(0.0, min(1.0, float(parsed.confidence or 0.5))),
+        "evidence_used": list(parsed.evidence_used or []),
+        "calibration_reason": parsed.calibration_reason or "",
+    }
 
 
 async def call_generate_cypher(prompt: str) -> RetrievalQuery:

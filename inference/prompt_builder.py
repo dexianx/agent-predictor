@@ -4,7 +4,93 @@ ICL prompt assembly — 5-block pipeline:
   D: Item metadata     E: Cultural voice overlay (NG only)
 """
 
+# ── Aspect risk extraction (Pass 7) ──────────────────────────────────────────
+
+_ASPECT_TERMS: dict[str, list[str]] = {
+    "quality":       [
+        "cheap", "bad quality", "flimsy", "cheaply made", "poorly made",
+        "bad build", "low quality", "poor quality", "thin material", "feels cheap",
+        "plastic feel", "not durable", "broke after",
+    ],
+    "functionality": [
+        "stopped working", "does not work", "doesn't work", "didn't work",
+        "did not work", "noisy", "unreliable", "malfunction", "broke", "broken",
+        "not working", "failed after", "stopped after", "won't work",
+    ],
+    "usability":     [
+        "hard to use", "difficult to use", "difficult to", "hard to fill",
+        "hard to clean", "confusing", "awkward", "not user friendly",
+        "hard to assemble", "complicated", "instructions unclear",
+    ],
+    "battery":       [
+        "drains quickly", "battery drains", "battery weak", "short battery",
+        "battery life", "battery bad", "runs out fast", "battery dies",
+    ],
+    "value":         [
+        "not worth", "overpriced", "waste of money", "waste of", "too expensive",
+        "not good value", "money back", "disappointed", "would not recommend",
+        "would not buy", "wouldn't buy again",
+    ],
+}
+
+
+def extract_aspect_risks(others_reviews: list[dict]) -> dict[str, dict]:
+    """Count aspect failure mentions in negative/neutral retrieved community reviews.
+
+    Only counts mentions in reviews with rating <= 3 (negative or neutral), to avoid
+    false-positive injection from incidental aspect mentions in positive reviews
+    (e.g. "I was worried about quality but it's actually great").
+
+    Returns a dict of aspect -> {"count": int, "has_exact": bool} where
+    has_exact means at least one exact-item review (bucket == "exact_item" or
+    score >= 0.9) mentions the aspect.
+
+    Only aspects with exact-item evidence OR count >= 3 across negative/neutral
+    reviews are returned, to prevent single-complaint noise from category reviews.
+    """
+    result: dict[str, dict] = {}
+    for review in others_reviews:
+        rating = review.get("rating")
+        # Skip clearly positive reviews — only extract from negative/neutral evidence
+        if rating is not None:
+            try:
+                if float(rating) > 3.0:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        text = (review.get("text") or "").lower()
+        is_exact = (
+            review.get("bucket") == "exact_item"
+            or (review.get("score") or 0) >= 0.9
+            or (review.get("similarity") or 0) >= 0.9
+        )
+        for aspect, terms in _ASPECT_TERMS.items():
+            if any(term in text for term in terms):
+                entry = result.setdefault(aspect, {"count": 0, "has_exact": False})
+                entry["count"] += 1
+                if is_exact:
+                    entry["has_exact"] = True
+    # Surface risks with exact-item evidence (any count) OR >=3 negative/neutral mentions
+    # (≥3 is stricter than before to avoid category overcorrection).
+    return {
+        k: v for k, v in result.items()
+        if v["has_exact"] or v["count"] >= 3
+    }
+
+
 # ── Signal derivation ─────────────────────────────────────────────────────────
+
+def _consistency_label(rating_mean: float, rating_std: float, review_count: int) -> str:
+    if review_count < 10:
+        return "low_history"
+    if rating_mean >= 4.7 and rating_std <= 0.5:
+        return "almost_always_5"
+    if rating_mean >= 4.3 and rating_std <= 0.8:
+        return "mostly_positive"
+    if 3.5 <= rating_mean < 4.3:
+        return "balanced"
+    return "critical"
+
 
 def derive_signals(
     persona: dict,
@@ -14,6 +100,8 @@ def derive_signals(
 ) -> dict:
     rating_mean = persona.get("rating_mean") or 3.5
     rating_std  = persona.get("rating_std") or 0.8
+    rating_skew = persona.get("rating_skew") or 0.0
+    review_count = int(persona.get("review_count") or 0)
 
     category = (item_meta.get("category") or "").strip()
     cat_entry = persona.get("cat_bias", {}).get(category, {})
@@ -30,6 +118,19 @@ def derive_signals(
     others_dist_str = " ".join(
         f"{k}★×{v}" for k, v in sorted(dist_parts.items(), reverse=True)
     ) if dist_parts else "n/a"
+    exact_or_item_low = [
+        (r.get("text") or "").strip()[:180]
+        for r in others_on_item
+        if r.get("rating") is not None
+        and float(r["rating"]) <= 2
+        and (r.get("bucket") == "exact_item" or r.get("score", 0) >= 0.9)
+        and (r.get("text") or "").strip()
+    ][:3]
+    neutral_reviews = [
+        (r.get("text") or "").strip()[:180]
+        for r in others_on_item
+        if r.get("rating") is not None and int(float(r["rating"])) == 3 and (r.get("text") or "").strip()
+    ][:2]
 
     word_counts = [r.get("word_count") or len((r.get("text") or "").split())
                    for r in own_reviews if r.get("text")]
@@ -76,13 +177,27 @@ def derive_signals(
     price_ngn = item_meta.get("price_ngn")
     price_sensitivity = persona.get("price_sensitivity") or 0.0
 
+    aspect_risks = extract_aspect_risks(others_on_item)
+    item_stats = item_meta.get("item_rating_stats") or {}
+    exact_item_count = int(item_stats.get("count") or 0)
+    item_low_ratio = float(item_stats.get("low_ratio") or 0.0)
+    item_high_ratio = float(item_stats.get("high_ratio") or 0.0)
+
     return {
         "rating_mean":      rating_mean,
         "rating_std":       rating_std,
+        "rating_skew":      rating_skew,
+        "review_count":     review_count,
+        "consistency_label": _consistency_label(rating_mean, rating_std, review_count),
         "category_mean":    category_mean,
         "category_count":   category_count,
         "others_mean":      others_mean,
         "others_dist_str":  others_dist_str,
+        "others_negative_count": dist_parts.get(1, 0) + dist_parts.get(2, 0),
+        "others_neutral_count":  dist_parts.get(3, 0),
+        "others_positive_count": dist_parts.get(4, 0) + dist_parts.get(5, 0),
+        "negative_examples": exact_or_item_low,
+        "neutral_examples": neutral_reviews,
         "avg_own_words":    avg_own_words,
         "vocab_label":      vocab_label,
         "tendency":         tendency,
@@ -91,6 +206,16 @@ def derive_signals(
         "price_ngn":        price_ngn,
         "price_sensitivity": price_sensitivity,
         "locale":           locale,
+        "aspect_risks":     aspect_risks,
+        "exact_item_count":  exact_item_count,
+        "exact_item_mean":   item_stats.get("mean"),
+        "exact_item_std":    float(item_stats.get("std") or 0.0),
+        "item_low_ratio":    item_low_ratio,
+        "item_high_ratio":   item_high_ratio,
+        "item_low_count":    int(item_stats.get("low_count") or 0),
+        "item_mid_count":    int(item_stats.get("mid_count") or 0),
+        "item_high_count":   int(item_stats.get("high_count") or 0),
+        "item_bimodal":      bool(item_stats.get("bimodal")),
     }
 
 
@@ -143,8 +268,10 @@ def format_own_reviews(own_reviews: list[dict]) -> str:
         age_str = f"{age}mo ago" if age is not None else "unknown age"
         item = r.get("item_name") or "Unknown item"
         rating = r.get("rating") or "?"
+        bucket = r.get("style_bucket")
+        bucket_str = " · low-rating style anchor" if bucket == "low_or_neutral" else ""
         text = (r.get("text") or "").strip()[:300]
-        parts.append(f'[{i}] {item} — {rating}★ ({age_str})\n    "{text}"')
+        parts.append(f'[{i}] {item} — {rating}★ ({age_str}{bucket_str})\n    "{text}"')
     return "\n\n".join(parts)
 
 
@@ -244,16 +371,42 @@ def build_user_prompt(
     if cat_mean and cat_count > 0:
         cat_note = f"\nThis user's historical average for this category: {cat_mean:.2f}★ ({cat_count} reviews)"
 
+    dist_note = f"\nRetrieved evidence rating mix: {signals.get('others_dist_str') or 'n/a'}"
+    if signals.get("others_mean") is not None:
+        dist_note += f" (mean {signals['others_mean']:.2f}★)"
+
+    caution_lines = []
+    for text in signals.get("negative_examples") or []:
+        caution_lines.append(f"- {text}")
+    for text in signals.get("neutral_examples") or []:
+        caution_lines.append(f"- {text}")
+    caution_block = ""
+    if caution_lines:
+        caution_block = "\n\nEXACT-ITEM CAVEATS TO CONSIDER:\n" + "\n".join(caution_lines)
+
+    aspect_risks = signals.get("aspect_risks") or {}
+    aspect_block = ""
+    if aspect_risks:
+        sorted_risks = sorted(aspect_risks.items(), key=lambda x: (-x[1]["count"], x[0]))
+        risk_lines = []
+        for aspect, info in sorted_risks:
+            count = info["count"]
+            exact_flag = " [exact-item evidence]" if info.get("has_exact") else ""
+            risk_lines.append(f"- {aspect}: {count} mention{'s' if count > 1 else ''}{exact_flag}")
+        aspect_block = "\n\nVISIBLE ITEM RISKS (extracted from retrieved community reviews):\n" + "\n".join(risk_lines)
+
     return f"""HOW THIS SHOPPER WRITES (their own past reviews):
 {own_block}
 
 WHAT OTHERS SAY ABOUT THIS ITEM:
-{others_block}
+{others_block}{caution_block}{aspect_block}
 
 ITEM TO REVIEW:
-{item_line}{price_section}{desc_section}{item_context}{cat_note}
+{item_line}{price_section}{desc_section}{item_context}{cat_note}{dist_note}
 
-Write the review now:"""
+Write the review now. Reflect the evidence honestly. Do not invent caveats just because
+some same-category products have issues; include a caveat only when the target item evidence
+or this user's own history supports it."""
 
 
 def build_rating_prompt(
@@ -261,11 +414,78 @@ def build_rating_prompt(
     persona: dict,
     signals: dict,
 ) -> str:
-    return f"""You are predicting the star rating (1–5 integer) this user would give.
+    negative_block = "\n".join(f"- {text}" for text in signals.get("negative_examples") or []) or "none"
+    neutral_block = "\n".join(f"- {text}" for text in signals.get("neutral_examples") or []) or "none"
 
-User rating profile: mean={signals['rating_mean']:.2f}, std={signals['rating_std']:.2f}, tendency={signals['tendency']}
-Category mean: {signals['category_mean']:.2f}
+    tendency = signals["tendency"]
+    rating_mean = signals["rating_mean"]
+
+    rating_std  = signals.get("rating_std", 0.8)
+    rating_skew = signals.get("rating_skew", 0.0)
+
+    # Tendency-calibrated 5-star rule so generous users are not systematically under-predicted
+    if tendency in ("generous",):
+        five_star_rule = (
+            f"This user is generous (mean {rating_mean:.2f}★). "
+            "Use 5 when the review is overall positive with no product-specific defect mentioned. "
+            "Use 4 only if there is a concrete product caveat in the review or strong negative retrieved evidence."
+        )
+    elif tendency in ("balanced",):
+        five_star_rule = (
+            f"This user is balanced (mean {rating_mean:.2f}★). "
+            "Use 5 when the review is positive and enthusiastic with no meaningful caveat. "
+            "Use 4 for a positive review that includes at least one concrete product limitation."
+        )
+    else:
+        five_star_rule = (
+            f"This user is a tough critic (mean {rating_mean:.2f}★). "
+            "Use 5 only for genuinely enthusiastic, caveat-free reviews. "
+            "Use 4 if there is any hedging. Use 3 or lower when the review is mixed or disappointed."
+        )
+
+    aspect_risks = signals.get("aspect_risks") or {}
+    risk_note = ""
+    if aspect_risks:
+        risk_items = ", ".join(
+            f"{a} ({info['count']} mention{'s' if info['count'] > 1 else ''}{'★exact' if info.get('has_exact') else ''})"
+            for a, info in aspect_risks.items()
+        )
+        risk_note = f"\nRetrieved item risk signals: {risk_items}"
+
+    item_distribution = ""
+    if (signals.get("exact_item_count") or 0) >= 3:
+        bimodal = ", BIMODAL - polarizing product" if signals.get("item_bimodal") else ""
+        item_distribution = (
+            "\nItem-wide rating distribution: "
+            f"n={signals['exact_item_count']}, "
+            f"mean={signals.get('exact_item_mean'):.2f}, "
+            f"std={signals.get('exact_item_std'):.2f}, "
+            f"low={signals.get('item_low_ratio'):.0%}, "
+            f"high={signals.get('item_high_ratio'):.0%}{bimodal}"
+        )
+
+    return f"""You are predicting the star rating (1–5 integer) this user would give after writing the review below.
+
+User rating profile: mean={rating_mean:.2f}, std={signals['rating_std']:.2f}, n={signals.get('review_count', 0)} reviews, tendency={tendency}, consistency={signals.get('consistency_label')}
+Category mean: {signals['category_mean']:.2f} across {signals['category_count']} reviews
+Retrieved evidence: mean={signals.get('others_mean')}, mix={signals.get('others_dist_str')}{risk_note}{item_distribution}
+Low-rating evidence:
+{negative_block}
+Neutral evidence:
+{neutral_block}
+
 The review they wrote:
 \"\"\"{review_text[:600]}\"\"\"
 
-Reply with a single integer 1–5. Nothing else."""
+Return a JSON object with:
+rating: integer 1-5
+confidence: number 0-1
+evidence_used: short list of evidence strings
+calibration_reason: one sentence
+
+Calibration rules:
+- {five_star_rule}
+- If the review contains strong caveats, disappointment, wrong material, setup trouble,
+  value concerns, or exact-item negative evidence, consider 2-4.
+- A review centered on a defect, misleading listing, poor value, or failure is usually 1-3.
+- If retrieved evidence shows severe item risks (exact-item evidence of failure/quality issues), lower the rating even if the review seems positive."""

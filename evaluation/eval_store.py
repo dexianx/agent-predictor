@@ -62,6 +62,7 @@ class EvalHoldoutCase:
             item_description=description or None,
             item_category=self.category,
             item_brand=self.item_brand,
+            heldout_review_id=self.review_id,
         )
 
 
@@ -213,10 +214,15 @@ def load_holdout_cases(
     source: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    review_ids: list[str] | None = None,
     include_restored: bool = False,
 ) -> list[EvalHoldoutCase]:
     clauses = ["split_name = ?"]
     params: list[Any] = [split_name]
+    if review_ids:
+        placeholders = ",".join("?" for _ in review_ids)
+        clauses.append(f"review_id IN ({placeholders})")
+        params.extend(review_ids)
     if source:
         clauses.append("source = ?")
         params.append(source)

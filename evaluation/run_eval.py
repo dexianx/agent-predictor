@@ -106,6 +106,7 @@ async def _run_holdout_case(
         "reference_source": bundle.source,
         "rubric": rubric.to_dict(),
         "behavior": behavior.__dict__ if behavior else None,
+        "evaluation_context": result.get("evaluation_context", {}),
     }
     _print_holdout_report(case, result, rubric, behavior, bundle)
     return report
@@ -253,6 +254,17 @@ def _print_holdout_report(case, result, rubric, behavior, bundle: ReferenceBundl
     print(f"Product : {case.item_title[:90]}")
     print(f"User    : {case.user_id} | Source: {case.source} | Branch: {result['retrieval_branch']}")
     print(f"Rating  : predicted={result['predicted_rating']} heldout={case.rating}")
+    pass16 = result.get("evaluation_context", {}).get("pass16", {})
+    item_stats = result.get("evaluation_context", {}).get("item_rating_stats", {})
+    if pass16 or item_stats:
+        calibration = pass16.get("calibration") or {}
+        print(
+            "Pass 16 : "
+            f"mix={pass16.get('rating_mix_enabled')} "
+            f"generous={calibration.get('generous_bump', False)} "
+            f"ghost={calibration.get('ghost_bump', False)} "
+            f"exact_n={item_stats.get('count', 0)}"
+        )
     print("Rubric (Task A)")
     print(f"  ROUGE-L max       : {rubric.rouge_l_max:.4f}")
     if rubric.bertscore_f1_max is not None:
@@ -343,12 +355,14 @@ async def main_async(args: argparse.Namespace) -> int:
         return 0
 
     with connect_sqlite(args.sqlite_path) as conn:
+        review_ids = _load_review_ids(args.review_ids_file)
         cases = load_holdout_cases(
             conn,
             args.split_name,
             source=args.source,
             limit=args.max_cases,
             offset=args.offset,
+            review_ids=review_ids,
             include_restored=args.include_restored,
         )
     if not cases:
@@ -388,6 +402,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--source", choices=("amazon", "nigerian"), default=None)
     parser.add_argument("--output-dir", type=Path, default=Path("evaluation/output"))
+    parser.add_argument("--review-ids-file", type=Path, default=None)
     parser.add_argument("--skip-bertscore", action="store_true")
     parser.add_argument("--skip-supplementary", action="store_true")
     parser.add_argument("--include-restored", action="store_true")
@@ -398,6 +413,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", NEO4J_USER))
     parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", NEO4J_PASSWORD))
     return parser.parse_args(argv)
+
+
+def _load_review_ids(path: Path | None) -> list[str] | None:
+    if path is None:
+        return None
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def main(argv: list[str] | None = None) -> int:

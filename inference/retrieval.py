@@ -1,4 +1,5 @@
 import asyncio
+import os
 from neo4j import AsyncSession
 from .llm_client import call_generate_cypher
 
@@ -123,6 +124,18 @@ RETURN r.text AS text, r.rating AS rating, r.wordCount AS word_count,
        age AS age_months
 """
 
+QUERY_OWN_LOW_NEUTRAL = """
+MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(other:Item)
+WHERE toFloat(r.rating) <= 3.0
+WITH r, other,
+     duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age
+ORDER BY toFloat(r.rating) ASC, age ASC
+LIMIT $K
+RETURN r.text AS text, r.rating AS rating, r.wordCount AS word_count,
+       r.locale AS locale, other.title AS item_name, other.category AS category,
+       age AS age_months, "low_or_neutral" AS style_bucket
+"""
+
 QUERY_A_SAME_CAT_BY_NAME = """
 MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item)-[:IN_CATEGORY]->(cat:Category)
 WHERE toLower(cat.name) CONTAINS toLower($category)
@@ -146,7 +159,69 @@ WITH r, other, locale_w, age,
 ORDER BY score DESC
 LIMIT $N
 RETURN r.text AS text, r.rating AS rating, r.locale AS locale,
-       r.platform AS platform, r.wordCount AS word_count, score, age AS age_months
+       r.platform AS platform, r.wordCount AS word_count, score, age AS age_months,
+       r.verifiedPurchase AS verified_purchase, r.helpfulVote AS helpful_vote
+"""
+
+QUERY_EXACT_ITEM_BUCKET = """
+MATCH (u:User {id: $user_id})
+MATCH (target:Item {id: $item_id})<-[:ABOUT]-(r:Review)<-[:WROTE]-(other:User)
+WHERE other.id <> $user_id
+  AND toFloat(r.rating) >= $min_rating
+  AND toFloat(r.rating) <= $max_rating
+WITH r, other, u,
+     CASE WHEN other.locale = u.locale THEN 1.0 ELSE 0.3 END AS locale_w,
+     duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age,
+     CASE WHEN coalesce(r.verifiedPurchase, false) THEN 1.0 ELSE 0.5 END AS verified_w,
+     CASE
+       WHEN coalesce(r.helpfulVote, 0) <= 0 THEN 0.0
+       ELSE log10(1.0 + toFloat(coalesce(r.helpfulVote, 0))) / log10(50.0)
+     END AS raw_helpful_w
+WITH r, other, age, verified_w,
+     CASE WHEN raw_helpful_w > 1.0 THEN 1.0 ELSE raw_helpful_w END AS helpful_w,
+     (locale_w * 0.6 + (1.0 / (1.0 + toFloat(age) / 12.0)) * 0.4) AS score
+ORDER BY verified_w DESC, helpful_w DESC, score DESC
+LIMIT $N
+RETURN r.text AS text, r.rating AS rating, r.locale AS locale,
+       r.platform AS platform, r.wordCount AS word_count, score, age AS age_months,
+       r.verifiedPurchase AS verified_purchase, r.helpfulVote AS helpful_vote
+"""
+
+QUERY_ITEM_RATING_STATS = """
+MATCH (target:Item {id: $item_id})<-[:ABOUT]-(r:Review)
+WHERE ($heldout_review_id = "" OR r.id <> $heldout_review_id)
+WITH collect(toFloat(r.rating)) AS ratings
+WHERE size(ratings) > 0
+WITH ratings,
+     size(ratings) AS count,
+     reduce(s = 0.0, x IN ratings | s + x) / size(ratings) AS mean
+RETURN count,
+       mean,
+       sqrt(reduce(s = 0.0, x IN ratings | s + ((x - mean) * (x - mean))) / count) AS std,
+       size([x IN ratings WHERE x <= 2.0]) AS low_count,
+       size([x IN ratings WHERE x = 3.0]) AS mid_count,
+       size([x IN ratings WHERE x >= 4.0]) AS high_count,
+       size([x IN ratings WHERE x = 5.0]) AS five_count,
+       size([x IN ratings WHERE x = 1.0]) AS one_count
+"""
+
+# Note (Pass 11 analysis): QUERY_B is rating-agnostic (sorted by locale+recency only).
+# When all returned reviews are positive for a low-quality product, the model receives
+# misleadingly optimistic context. QUERY_EXACT_ITEM_LOW was designed as a supplement to
+# inject negative evidence — however, the 15-case eval set uses the "category" branch for
+# all cases (item_ids not found in DB), so the supplement never fired and the test was
+# inconclusive. The gap remains architecturally valid; a targeted test with exact-item
+# branch cases is needed to validate the fix.
+QUERY_EXACT_ITEM_LOW = """
+MATCH (target:Item {id: $item_id})<-[:ABOUT]-(r:Review)<-[:WROTE]-(other:User)
+WHERE other.id <> $user_id AND toFloat(r.rating) <= 3.0
+WITH r, other,
+     CASE WHEN other.locale = $user_locale THEN 1.0 ELSE 0.5 END AS locale_w,
+     duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age
+ORDER BY toFloat(r.rating) ASC, locale_w DESC, age ASC
+LIMIT 2
+RETURN r.text AS text, r.rating AS rating, r.locale AS locale,
+       r.platform AS platform, r.wordCount AS word_count, age AS age_months
 """
 
 QUERY_CATEGORY_REVIEWS = """
@@ -253,6 +328,69 @@ async def fetch_user_review_on_item(driver, user_id: str, item_id: str) -> dict 
         return dict(row) if row else None
 
 
+async def fetch_item_rating_stats(
+    driver,
+    item_id: str,
+    heldout_review_id: str = "",
+) -> dict:
+    """Aggregate rating distribution for the exact target item.
+
+    The eval holdout review is excluded when provided, so this can be safely
+    passed into Task A prompts without leaking the hidden label.
+    """
+    if not item_id:
+        return _empty_item_rating_stats()
+    async with driver.session() as session:
+        result = await session.run(
+            QUERY_ITEM_RATING_STATS,
+            item_id=item_id,
+            heldout_review_id=heldout_review_id or "",
+        )
+        row = await result.single()
+    if row is None:
+        return _empty_item_rating_stats()
+    stats = dict(row)
+    count = int(stats.get("count") or 0)
+    low_count = int(stats.get("low_count") or 0)
+    high_count = int(stats.get("high_count") or 0)
+    one_count = int(stats.get("one_count") or 0)
+    five_count = int(stats.get("five_count") or 0)
+    low_ratio = (low_count / count) if count else 0.0
+    high_ratio = (high_count / count) if count else 0.0
+    stats.update(
+        {
+            "count": count,
+            "mean": float(stats["mean"]) if stats.get("mean") is not None else None,
+            "std": float(stats["std"] or 0.0),
+            "low_count": low_count,
+            "mid_count": int(stats.get("mid_count") or 0),
+            "high_count": high_count,
+            "five_count": five_count,
+            "one_count": one_count,
+            "low_ratio": low_ratio,
+            "high_ratio": high_ratio,
+            "bimodal": one_count >= 2 and five_count >= 2 and (low_ratio + high_ratio) >= 0.6,
+        }
+    )
+    return stats
+
+
+def _empty_item_rating_stats() -> dict:
+    return {
+        "count": 0,
+        "mean": None,
+        "std": 0.0,
+        "low_count": 0,
+        "mid_count": 0,
+        "high_count": 0,
+        "five_count": 0,
+        "one_count": 0,
+        "low_ratio": 0.0,
+        "high_ratio": 0.0,
+        "bimodal": False,
+    }
+
+
 async def resolve_item_by_title(driver, keyword: str) -> str | None:
     """Return the item_id of the closest title match, or None."""
     async with driver.session() as session:
@@ -278,16 +416,27 @@ async def fetch_own_reviews(
     category: str = "",
     brand: str = "",
 ) -> list[dict]:
+    async def add_low_neutral(rows: list[dict]) -> list[dict]:
+        result = await session.run(QUERY_OWN_LOW_NEUTRAL, user_id=user_id, K=2)
+        extra = [dict(r) async for r in result]
+        seen = {(r.get("item_name"), r.get("text")) for r in rows}
+        for r in extra:
+            key = (r.get("item_name"), r.get("text"))
+            if key not in seen:
+                rows.append(r)
+                seen.add(key)
+        return rows
+
     if not item_id:
         # Category-based: user's past reviews in the same product space
         if category:
             result = await session.run(QUERY_A_SAME_CAT_BY_NAME, user_id=user_id, category=category, K=K)
             rows = [dict(r) async for r in result]
             if rows:
-                return rows
+                return await add_low_neutral(rows)
         # Final fallback: any recent reviews for style signal
         result = await session.run(QUERY_OWN_RECENT, user_id=user_id, K=K)
-        return [dict(r) async for r in result]
+        return await add_low_neutral([dict(r) async for r in result])
 
     # Legacy path: item_id known — same-category then any-category backfill
     result = await session.run(QUERY_A_SAME_CAT, user_id=user_id, item_id=item_id, K=K)
@@ -299,7 +448,7 @@ async def fetch_own_reviews(
         for r in extra:
             if r["item_name"] not in seen and len(rows) < K:
                 rows.append(r)
-    return rows
+    return await add_low_neutral(rows)
 
 
 async def generate_retrieval_query(
@@ -362,6 +511,75 @@ NEUTRALITY REQUIREMENTS — apply all of the following:
     return result.cypher.strip()
 
 
+def _flag_enabled(name: str, default: str = "0") -> bool:
+    value = os.environ.get(name, default).strip().lower()
+    return value not in {"", "0", "false", "no", "off"}
+
+
+async def _fetch_exact_item_rating_mix(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    item_id: str,
+    user_tendency: str,
+    N: int,
+) -> tuple[list[dict], bool]:
+    rows: list[dict] = []
+    seen_texts: set[str] = set()
+
+    def add_bucket(bucket_rows: list[dict], bucket_name: str) -> None:
+        for row in bucket_rows:
+            text = (row.get("text") or "").strip()
+            if not text or text in seen_texts or len(rows) >= N:
+                continue
+            row["bucket"] = "exact_item"
+            row["rating_mix_bucket"] = bucket_name
+            seen_texts.add(text)
+            rows.append(row)
+
+    async def fetch_bucket(min_rating: float, max_rating: float, limit: int, name: str) -> list[dict]:
+        result = await session.run(
+            QUERY_EXACT_ITEM_BUCKET,
+            user_id=user_id,
+            item_id=item_id,
+            min_rating=min_rating,
+            max_rating=max_rating,
+            N=limit,
+        )
+        bucket_rows = [dict(r) async for r in result]
+        for row in bucket_rows:
+            row["rating_mix_bucket"] = name
+        return bucket_rows
+
+    positives = await fetch_bucket(4.0, 5.0, 1, "positive")
+    lows = await fetch_bucket(1.0, 2.0, 1, "low")
+    neutrals = await fetch_bucket(3.0, 3.0, 1, "neutral")
+
+    filtered_generous = False
+    if user_tendency == "generous" and lows and len(positives) >= len(lows):
+        lows = []
+        filtered_generous = True
+
+    add_bucket(positives, "positive")
+    if lows:
+        add_bucket(lows, "low")
+    add_bucket(neutrals, "neutral")
+
+    if len(rows) < N:
+        result = await session.run(QUERY_B, user_id=user_id, item_id=item_id, N=N * 2)
+        fill_rows = [dict(r) async for r in result]
+        for row in fill_rows:
+            row["rating_mix_bucket"] = "legacy_fill"
+        if filtered_generous:
+            fill_rows = [
+                row for row in fill_rows
+                if row.get("rating") is None or float(row["rating"]) >= 3.0
+            ]
+        add_bucket(fill_rows, "legacy_fill")
+
+    return rows[:N], filtered_generous
+
+
 async def fetch_others_reviews(
     session: AsyncSession,
     user_id: str,
@@ -372,9 +590,54 @@ async def fetch_others_reviews(
     item_name: str = "",
     item_brand: str = "",
     item_category: str = "",
+    user_tendency: str = "",
     N: int = 5,
 ) -> list[dict]:
-    # Tier 1: Category-scoped structural query (deterministic, locale+recency scored)
+    rows: list[dict] = []
+    seen_texts: set[str] = set()
+
+    def add_unique(new_rows: list[dict]) -> None:
+        for row in new_rows:
+            text = (row.get("text") or "").strip()
+            if not text or text in seen_texts or len(rows) >= N:
+                continue
+            seen_texts.add(text)
+            rows.append(row)
+
+    # Tier 1: exact-item community reviews, excluding the target user.
+    if item_id:
+        rating_mix_enabled = _flag_enabled("PASS16_RATING_MIX", "0")
+        if rating_mix_enabled:
+            exact_rows, filtered_generous = await _fetch_exact_item_rating_mix(
+                session,
+                user_id=user_id,
+                item_id=item_id,
+                user_tendency=user_tendency,
+                N=N,
+            )
+        else:
+            result = await session.run(QUERY_B, user_id=user_id, item_id=item_id, N=N)
+            exact_rows = [dict(r) async for r in result]
+            filtered_generous = False
+        for row in exact_rows:
+            row["bucket"] = "exact_item"
+        # For generous users, filter ≤2★ reviews only when positive reviews (≥3★) are
+        # the majority — prevents speculative caveats copied from edge-case complaints
+        # while still exposing genuinely bad product evidence when negatives dominate.
+        if not rating_mix_enabled and user_tendency == "generous" and exact_rows:
+            pos = [r for r in exact_rows if r.get("rating") is not None and float(r["rating"]) >= 3.0]
+            neg = [r for r in exact_rows if r.get("rating") is not None and float(r["rating"]) <= 2.0]
+            if len(pos) >= len(neg) and neg:
+                exact_rows = pos + [r for r in exact_rows if r.get("rating") is None]
+                filtered_generous = True
+        add_unique(exact_rows)
+        # Return after Tier 1 if full, or if we filtered for a generous user (screened
+        # exact-item pool is self-contained — no need to supplement with category evidence).
+        if len(rows) >= N or (filtered_generous and rows):
+            return rows
+
+    # Tier 2: category-scoped structural query. Exact-item evidence is allowed
+    # to change sentiment; generic category negatives are only fallback context.
     if item_category:
         result = await session.run(
             QUERY_CATEGORY_REVIEWS,
@@ -383,12 +646,12 @@ async def fetch_others_reviews(
             user_locale=user_locale,
             N=N,
         )
-        rows = [dict(r) async for r in result]
+        add_unique([dict(r) async for r in result])
         if rows:
             print(f"category: structural query returned {len(rows)} rows")
             return rows
 
-    # Tier 2: LLM-generated Cypher with structured product context
+    # Tier 3: LLM-generated Cypher with structured product context
     if user_query:
         query = await generate_retrieval_query(
             user_query, user_locale,
@@ -400,21 +663,14 @@ async def fetch_others_reviews(
             try:
                 params = {"user_locale": user_locale, "item_vec": item_vec}
                 result = await session.run(query, **{k: v for k, v in params.items() if v is not None})
-                rows = [dict(r) async for r in result]
+                add_unique([dict(r) async for r in result])
                 if rows:
                     print(f"cypher: LLM-generated query returned {len(rows)} rows")
                     return rows[:N]
             except Exception:
                 pass
 
-    # Backward compat: item_id-based locale-weighted fallback
-    if item_id:
-        result = await session.run(QUERY_B, user_id=user_id, item_id=item_id, N=N)
-        rows = [dict(r) async for r in result]
-        if rows:
-            return rows
-
-    # Tier 3: Vector search — last resort when category not in graph
+    # Tier 4: Vector search — last resort when category not in graph
     if item_vec is not None:
         result2 = await session.run(
             QUERY_VECTOR, item_vec=item_vec, user_locale=user_locale, N=N
@@ -434,6 +690,7 @@ async def fetch_retrieval(
     item_name: str = "",
     item_brand: str = "",
     item_category: str = "",
+    user_tendency: str = "",
     K: int = 3,
     N: int = 5,
 ) -> tuple[list[dict], list[dict], dict]:
@@ -446,7 +703,7 @@ async def fetch_retrieval(
             s2, user_id, item_id, user_locale, item_vec,
             user_query=user_query, item_name=item_name,
             item_brand=item_brand, item_category=item_category,
-            N=N,
+            user_tendency=user_tendency, N=N,
         )
     graph_data = _build_graph_data(user_id, target_id, own, others)
     return own, others, graph_data
