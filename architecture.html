@@ -100,17 +100,19 @@
   ul li { margin-bottom: 4px; }
   .kv { color: #ccc; font-weight: 500; }
   .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; background: rgba(217,119,87,0.14); color: var(--primary); margin-right: 4px; vertical-align: middle; }
+  .req { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; background: rgba(80,200,120,0.12); color: #6ddc8b; margin-right: 4px; }
+  .opt { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; background: rgba(150,150,150,0.12); color: #999; margin-right: 4px; }
 </style>
 </head>
 <body>
 
 <h1>Kora — Task A System Architecture</h1>
-<p class="subtitle">DSN × BCT LLM Agent Challenge · Persona-Conditioned Review Generation · Paper reference (code-grounded)</p>
+<p class="subtitle">DSN × BCT LLM Agent Challenge · Persona-Conditioned Review Generation · Paper reference — code-grounded, updated May 2026</p>
 
 <div class="toc">
   <strong style="color:#ddd;">Contents</strong>
   <ol>
-    <li><a href="#abstract">Abstract & Design Goals</a></li>
+    <li><a href="#abstract">Abstract &amp; Design Goals</a></li>
     <li><a href="#stack">Technology Stack</a></li>
     <li><a href="#overview">End-to-End System Overview</a></li>
     <li><a href="#pipeline">Offline Pipeline (Data → Persona DB + KG)</a></li>
@@ -123,13 +125,14 @@
     <li><a href="#ui">Front-End Architecture</a></li>
     <li><a href="#decisions">Key Architectural Decisions</a></li>
     <li><a href="#limits">Limitations &amp; Future Work</a></li>
+  <li><a href="#evaluation">Evaluation Layer</a></li>
   </ol>
 </div>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="abstract">1. Abstract &amp; Design Goals</h2>
-<p>Kora is a user-modelling system that, given a known shopper <em>U</em> and a product description <em>P</em>, generates a free-form review and a 1–5 star rating that mimic <em>U</em>'s historical voice, rating calibration, and cultural register (with a Nigerian-locale specialisation). The system combines (i) an offline persona-construction pipeline that ingests multi-source review corpora, (ii) a Neo4j knowledge graph with a 384-dim vector index over review text, (iii) a SQLite persona store of stylometric and rating-bias statistics for 25k users, and (iv) an online inference path that performs schema-aware Cypher retrieval and a two-call Gemini in-context-learning generation, streamed to the client via WebSocket.</p>
-<p>Goals: (1) <em>persona fidelity</em> — the output must read like the specific user, not a generic reviewer; (2) <em>locale grounding</em> — Nigerian shoppers' Pidgin/price/authenticity register is preserved; (3) <em>retrieval transparency</em> — every generation is traceable to the graph subgraph that produced it; (4) <em>low-latency streaming</em> — first token under one second on warm models.</p>
+<p>Kora is a user-modelling system that, given a known shopper <em>U</em>, a product name <em>P</em>, and a price <em>$</em>, generates a free-form review and a 1–5 star rating that mimic <em>U</em>'s historical voice, rating calibration, and cultural register (with a Nigerian-locale specialisation). The system combines (i) an offline persona-construction pipeline ingesting Amazon US reviews across three categories, Nigerian e-commerce (Jumia/Konga), and Google Maps NG place reviews; (ii) a Neo4j knowledge graph with a 384-dim vector index over review embeddings; (iii) a SQLite persona store of 17 stylometric and rating-bias signals for ~25k users; and (iv) an online inference path that performs category-scoped Cypher retrieval (with LLM Cypher and vector fallbacks) and a two-call LLM in-context-learning generation, streamed to the client via WebSocket. Retrieval is anchored on <strong>product category and brand</strong>, not item ID — enabling accurate behavioural prediction for products not yet in the knowledge graph.</p>
+<p>Goals: (1) <em>persona fidelity</em> — output reads like the specific user, not a generic reviewer; (2) <em>locale grounding</em> — Nigerian shoppers' Pidgin/price/authenticity register is preserved; (3) <em>retrieval transparency</em> — every generation is traceable to the graph subgraph that produced it; (4) <em>price-aware generation</em> — submitted price is authoritative and overrides all graph-stored values; (5) <em>low-latency streaming</em> — first token under one second on warm models.</p>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="stack">2. Technology Stack</h2>
@@ -138,120 +141,270 @@
 <tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
 <tr><td>LLM provider (primary)</td><td><code>gemini-2.5-flash</code> via <code>google-genai</code> SDK</td><td>Native structured outputs (<code>response_mime_type=application/json</code> + Pydantic schema), low latency, strong instruction-following on 5-block ICL.</td></tr>
 <tr><td>LLM provider (fallback)</td><td>Groq <code>llama-3.3-70b-versatile</code> via OpenAI-compatible HTTP</td><td>Switchable with <code>LLM_PROVIDER=groq</code>; same <code>RetrievalQuery</code> / <code>ReviewRating</code> Pydantic contracts via <code>response_format: json_object</code>.</td></tr>
-<tr><td>Knowledge graph</td><td>Neo4j 5.x (async driver)</td><td>Cypher expressiveness for traversal (<code>(User)-[:WROTE]-&gt;(Review)-[:ABOUT]-&gt;(Item)-[:IN_CATEGORY]-&gt;(Category)</code>) plus native vector index.</td></tr>
-<tr><td>Vector index</td><td><code>review_embedding</code> · 384-dim cosine · over <code>Review.embedding</code></td><td>Built by <code>Neo4jWriter.create_indexes()</code> in-database; no separate vector DB.</td></tr>
-<tr><td>Embeddings</td><td><code>sentence-transformers/all-MiniLM-L6-v2</code> (CPU) · <code>HashingEmbedder</code> for tests</td><td>384-dim, fast on CPU, batched in pipeline and per-request in inference.</td></tr>
-<tr><td>Persona store</td><td>SQLite — <code>personas</code> + <code>category_rating_bias</code></td><td>Point-lookup by <code>user_id</code> in &lt; 1 ms; no server required; easy to ship.</td></tr>
-<tr><td>API</td><td>FastAPI · WebSocket + REST</td><td><code>/ws/simulate</code> streams structured events; <code>/simulate</code> collects to a single response; <code>/personas/*</code> for browsing.</td></tr>
+<tr><td>Knowledge graph</td><td>Neo4j 5.x (async driver)</td><td>Cypher expressiveness for traversal (<code>(User)-[:WROTE]-&gt;(Review)-[:ABOUT]-&gt;(Item)-[:IN_CATEGORY]-&gt;(Category)</code>) plus native vector index. Two independent async sessions per request to avoid driver socket conflicts.</td></tr>
+<tr><td>Vector index</td><td><code>review_embedding</code> · 384-dim cosine · on <code>Review.embedding</code></td><td>Built by <code>Neo4jWriter.create_indexes()</code>; 0.72 cosine threshold chosen empirically for topic relevance vs. recall tradeoff.</td></tr>
+<tr><td>Embeddings</td><td><code>sentence-transformers/all-MiniLM-L6-v2</code> (CPU, batch=64) · <code>HashingEmbedder</code> for tests</td><td>384-dim, fast on CPU, batched in pipeline and per-request in inference (lazy-loaded, cached globally after first call).</td></tr>
+<tr><td>Persona store</td><td>SQLite — <code>personas</code> + <code>category_rating_bias</code></td><td>Point-lookup by <code>user_id</code> in &lt;1 ms; no server required; ships as a single file with the repo.</td></tr>
+<tr><td>API</td><td>FastAPI · WebSocket + REST</td><td><code>/ws/simulate</code> streams structured events; <code>/simulate</code> collects to a single response; <code>/personas/*</code> for search and featured browsing.</td></tr>
 <tr><td>Front-end</td><td>React + Vite + TanStack Router + Tailwind + shadcn/ui</td><td>SPA on Cloudflare; lazy-loaded NVL canvas; framer-motion animated agent steps.</td></tr>
-<tr><td>Graph viz</td><td><code>@neo4j-nvl/react</code> InteractiveNvlWrapper</td><td>Force-directed canvas with hit-testing, click → node-details overlay panel.</td></tr>
+<tr><td>Graph viz</td><td><code>@neo4j-nvl/react</code> InteractiveNvlWrapper</td><td>Force-directed canvas with hit-testing, click → node-details overlay panel (absolute-positioned to prevent canvas reflow on open).</td></tr>
 </table>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="overview">3. End-to-End System Overview</h2>
 
+<p>The diagram below shows the full request-to-response flow. Storage reads branch left; LLM calls branch right. The six pipeline steps run sequentially in the centre spine. Dotted arrows are conditional paths.</p>
+
 <div class="mermaid">
-flowchart LR
-    subgraph CLIENT["Browser (ui/)"]
-        UI["React SPA<br/>TanStack Router · Tailwind"]
-        NVL["Neo4j NVL Canvas<br/>(lazy, client-only)"]
+flowchart TB
+    BROWSER["🌐 Browser — React SPA"]
+
+    subgraph REQ_BOX["WebSocket Request  (fields marked ★ are required)"]
+        direction LR
+        REQ["user_id ★ · item_name ★ · price_ngn ★\nitem_description ?  ·  raw_message ?"]
     end
-    subgraph SERVER["FastAPI (api/main.py)"]
-        WS["/ws/simulate · WebSocket"]
-        REST["/simulate · /personas/*"]
-        ORCH["inference.task_a.simulate_review"]
+
+    subgraph STEPS["FastAPI  /ws/simulate  →  simulate_review()  —  inference/task_a.py"]
+        direction TB
+        S1["① persona_load\nSQLite point-read by user_id"]
+        S2["② item_resolve  ·  metadata only\ntitle CONTAINS match  →  category + brand  →  dict fallback\n(does not set retrieval branch)"]
+        S3["③ retrieval  ·  2 independent sessions  ·  branch from category availability\nown reviews K=3   others reviews N=5\n★ authoritative override applied last\n   title = request.item_name\n   price  = request.price_ngn"]
+        S4["④ prompt_build\nderive_signals  ·  cultural voice block  ·  format exemplars\nassemble 5-block ICL  ·  system + user prompt"]
+        S5["⑤ llm_review  —  Call 1\ncall_review_stream(system, user)\nstreaming tokens → review text"]
+        S6["⑥ llm_rating  —  Call 2\ncall_rating(review_text + rating_profile)\nstructured integer 1–5"]
+        S1 --> S2 --> S3 --> S4 --> S5 --> S6
     end
-    subgraph DATA["Storage"]
-        SQLITE[("SQLite<br/>personas.db<br/>~25k personas")]
-        NEO4J[("Neo4j 5<br/>User · Review · Item<br/>Category · Platform<br/>vector index 384d")]
+
+    subgraph STORE["Storage"]
+        direction TB
+        SQLITE[("SQLite  personas.db\n~25 k users\n17 stylometry signals\ncategory_rating_bias table")]
+        NEO4J[("Neo4j 5  Knowledge Graph\nUser · Review · Item\nCategory · Platform\n384-dim cosine vector index\nitem props: priceNgn · priceUsd\n            avgRating · ratingCount")]
     end
-    subgraph LLMS["LLM"]
-        GEM["Gemini 2.5 Flash<br/>(google-genai)"]
-        GROQ["Groq Llama 3.3 70B<br/>(optional fallback)"]
+
+    subgraph LLM_BOX["LLM layer  —  inference/llm_client.py\nselected by  LLM_PROVIDER  environment variable"]
+        direction TB
+        GEM["Gemini 2.5 Flash\ngoogle-genai SDK\ndefault · primary\n─────────────────\nstreaming: generate_content_stream\nstructured: response_mime_type=application/json\n            + Pydantic response_schema"]
+        GROQ["Llama 3.3 70B Versatile\nGroq · OpenAI-compatible HTTP\nLLM_PROVIDER=groq\n─────────────────\nstreaming: SSE delta.content tokens\nstructured: response_format json_object\n            + model_validate_json"]
+        GEM -. "same 3-function contract\ncall_generate_cypher\ncall_review_stream\ncall_rating" .- GROQ
     end
-    UI -- "JSON: {user_id,item_id,item_name,item_description,raw_message}" --> WS
-    WS --> ORCH
-    REST --> ORCH
-    ORCH -- "load_persona(user_id)" --> SQLITE
-    ORCH -- "QUERY_ITEM_META · QUERY_A_* · QUERY_B · QUERY_VECTOR · LLM-Cypher" --> NEO4J
-    ORCH -- "call_generate_cypher · call_review_stream · call_rating" --> GEM
-    ORCH -. "if LLM_PROVIDER=groq" .-> GROQ
-    SQLITE --> ORCH
-    NEO4J --> ORCH
-    GEM --> ORCH
-    ORCH -- "step · graph_data · token · final · error" --> WS
-    WS --> UI
-    UI --> NVL
+
+    subgraph RESP["Events streamed back to browser"]
+        direction LR
+        EV["step × 6  →  graph_data  →  token × N  →  final"]
+        NVL["NVL Force-Graph Canvas\n(lazy-loaded, client-only)"]
+        EV --> NVL
+    end
+
+    BROWSER -- "WS JSON" --> REQ_BOX --> S1
+
+    S1 -- "load_persona(user_id)" --> SQLITE
+    SQLITE -- "17 signals\n+ cat_bias dict" --> S1
+
+    S2 -- "QUERY_ITEM_META\nQUERY_RESOLVE_BY_TITLE" --> NEO4J
+    NEO4J -- "title · brand · category\npriceNgn · avgRating" --> S2
+
+    S3 -- "QUERY_A_SAME_CAT_BY_NAME / QUERY_OWN_RECENT\nQUERY_CATEGORY_REVIEWS · QUERY_VECTOR\ncosine > 0.72 (item_name+category embedding)" --> NEO4J
+    NEO4J -- "own[≤3]: text · rating · age_months\nothers[≤5]: text · rating · locale · score" --> S3
+
+    S3 -. "Call 0  optional  (Tier 2 — when category returns 0 rows)\ncall_generate_cypher(schema + item_name + brand + category)\n→ neutrality-constrained Cypher" .-> LLM_BOX
+    LLM_BOX -. "RetrievalQuery{ cypher }\nvalidated: starts with MATCH / CALL" .-> S3
+
+    S5 -- "system prompt + user prompt\n(5-block ICL)" --> LLM_BOX
+    LLM_BOX -- "token chunks" --> S5
+
+    S6 -- "review_text[:600]\nrating_mean · category_mean · tendency" --> LLM_BOX
+    LLM_BOX -- "ReviewRating{ rating: int }\nfallback: category_mean → rating_mean → 3.5" --> S6
+
+    S6 --> RESP
+    RESP --> BROWSER
 </div>
 
-<p>The runtime touches three storage layers and (in the worst case) three LLM calls: <strong>Call 1</strong> generates Cypher from schema + user query (only when <code>raw_message</code> is present), <strong>Call 2</strong> streams the review text, <strong>Call 3</strong> returns the structured integer rating.</p>
-
-<!-- ─────────────────────────────────────────────────────────────────── -->
-<h2 id="pipeline">4. Offline Pipeline (pipeline/)</h2>
-<p>Entrypoint: <code>python -m pipeline.run_pipeline --sample-size 25000 …</code>. Runs once to populate both stores; inference is read-only thereafter.</p>
+<h3>Retrieval decision tree — all paths</h3>
+<p>The diagram below zooms into Step 2 (item resolve) and Step 3 (retrieval). Step 2 now resolves metadata only (category, brand) — it does not set the retrieval branch. Branch is determined from the resolved category. Others-review retrieval follows a 3-tier chain: category-scoped structural Cypher → LLM-generated Cypher → vector cosine search.</p>
 
 <div class="mermaid">
 flowchart TD
-    A1["amazon_source(categories, N)"] --> SAMP
-    A2["combined_ecommerce_source<br/>(Jumia / Konga, NG)"] --> SAMP
-    A3["google_maps_source<br/>(Nigerian places)"] --> SAMP
-    SAMP["persona_friendly_sample<br/>(stratify by user · keep multi-review users)"] --> ENR
-    ENR["enrich_records<br/>compute_stylometry · embed (MiniLM-L6-v2, batch=64)"] --> ACC
-    ACC["UserAccumulator<br/>aggregate per-user stats · category bias"] --> SQ[("SQLite<br/>personas<br/>category_rating_bias")]
-    ENR --> NW["Neo4jWriter.write_reviews<br/>MERGE User/Item/Review/Category/Platform<br/>create indexes + vector index"]
-    NW --> N4[("Neo4j 5<br/>nodes + rels + 384d cosine vector index")]
+    START(["Request fields\nitem_name · price_ngn · raw_message? · item_description?"])
+
+    %% ════════════════════════════════════════════════
+    %% STEP 2  —  ITEM METADATA RESOLUTION  (no branch assignment)
+    %% ════════════════════════════════════════════════
+    START --> IR4["QUERY_RESOLVE_BY_TITLE  item_name\nMATCH (i:Item)\nWHERE toLower(i.title) CONTAINS toLower(keyword)\nORDER BY size(i.title) ASC  LIMIT 1"]
+    IR4 --> IR5{"title\nmatched?"}
+    IR5 -- "yes → QUERY_ITEM_META\n(category + brand only)" --> META_DONE
+    IR5 -- "no match" --> META_FALLBACK["fallback item_meta =\n{ title: item_name, brand: '',\n  category: '', price_ngn: req.price_ngn }"]
+    META_FALLBACK --> META_DONE
+
+    META_DONE(["item_category = item_meta.category\nitem_brand    = item_meta.brand"])
+
+    %% ════════════════════════════════════════════════
+    %% BRANCH DETERMINATION
+    %% ════════════════════════════════════════════════
+    META_DONE --> BR1{"item_category\nnon-empty?"}
+    BR1 -- "yes" --> BRANCH_CAT(["branch = category"])
+    BR1 -- "no" --> BR2{"user_query\nnon-empty?"}
+    BR2 -- "yes" --> BRANCH_Q(["branch = query"])
+    BR2 -- "no"  --> BRANCH_V(["branch = vector"])
+
+    %% ════════════════════════════════════════════════
+    %% EMBEDDING  (item_name + category only)
+    %% ════════════════════════════════════════════════
+    BRANCH_CAT --> EMB1
+    BRANCH_Q   --> EMB1
+    BRANCH_V   --> EMB1
+
+    EMB1{"embed_text\nnon-empty?"}
+    EMB1 -- "yes" --> EMB2["MiniLM-L6-v2\nencode(item_name + ' ' + item_category)\n→ item_vec  384-dim float list\nNote: name+category only — avoids\nspec-text / review-text domain mismatch"]
+    EMB2 --> S1_OWN
+    EMB1 -- "no" --> S1_OWN
+
+    %% ════════════════════════════════════════════════
+    %% SESSION 1  —  OWN REVIEWS  (style anchors)
+    %% ════════════════════════════════════════════════
+    S1_OWN(["── Session 1: own reviews K=3 ──"])
+    S1_OWN --> OWN_CAT{"category\nknown?"}
+    OWN_CAT -- "yes" --> OWN6["QUERY_A_SAME_CAT_BY_NAME\nMATCH user → review → item → IN_CATEGORY\nWHERE cat.name CONTAINS category\nORDER BY age ASC  LIMIT K=3\nfields: text · rating · item_name · category · age_months"]
+    OWN6 --> OWN7{"rows ≥ 1?"}
+    OWN7 -- "yes" --> OWN_DONE
+    OWN7 -- "empty" --> OWN5
+    OWN_CAT -- "no" --> OWN5["QUERY_OWN_RECENT\nMATCH user → review → any item\nORDER BY age ASC  LIMIT K=3"]
+    OWN5 --> OWN_DONE(["own_reviews  ≤ 3 rows\ntext · rating · item_name · category · age_months"])
+
+    %% ════════════════════════════════════════════════
+    %% SESSION 2  —  OTHERS' REVIEWS  (3-tier chain)
+    %% ════════════════════════════════════════════════
+    OWN_DONE --> S2_START(["── Session 2: others' reviews N=5  (3-tier chain) ──"])
+
+    %% ── TIER 1: CATEGORY STRUCTURAL ─────────────────
+    S2_START --> T1_1{"item_category\nknown?"}
+
+    T1_1 -- "yes" --> T1_2["QUERY_CATEGORY_REVIEWS  —  primary path\nMATCH (i:Item)-[:IN_CATEGORY]->(cat:Category)\nWHERE cat.name CONTAINS category\n   OR i.category CONTAINS category\nMATCH (r:Review)-[:ABOUT]->(i)\nMATCH (other:User)-[:WROTE]->(r) WHERE other.id <> user_id\nscore = locale_w × 0.6 + recency_decay × 0.4\n  locale_w = 1.0 if r.locale = user_locale else 0.3\n  recency_decay = 1÷(1+age÷12)\nORDER BY score DESC  LIMIT N=5\nfields: text · rating · locale · item_name · category · score"]
+    T1_2 --> T1_3{"rows ≥ 1?"}
+    T1_3 -- "yes" --> OTHERS_DONE
+    T1_3 -- "empty" --> T2_1
+    T1_1 -- "no" --> T2_1
+
+    %% ── TIER 2: LLM Cypher ──────────────────────────
+    T2_1{"user_query\npresent?"}
+    T2_1 -- "yes" --> T2_2["call_generate_cypher\nPrompt injects:\n  · full DB schema (camelCase props)\n  · item_name · item_brand · item_category\n    (structured fields — not a freeform blob)\n  · target locale\n  · 4 neutrality rules:\n    ① rating mix: 2 pos · 1 neg · 1 neutral · 4 best\n    ② scope: category+brand first · no generic keywords\n    ③ anti-bias: cap 1 user at 2 reviews (collect()[..2])\n    ④ spread: ≥2 distinct items\nOutput: RetrievalQuery{ cypher: str }"]
+    T2_2 --> T2_3{"Cypher valid?\nstarts with MATCH/CALL"}
+    T2_3 -- "yes" --> T2_4["execute generated Cypher\nbind params: $user_locale · $item_vec\nExpected columns: text · rating · locale · item_name · category\nLIMIT 8 (inside generated query)"]
+    T2_4 --> T2_5{"rows ≥ 1?"}
+    T2_5 -- "yes  return[:5]" --> OTHERS_DONE
+    T2_5 -- "empty" --> T3_1
+    T2_3 -- "invalid / exception" --> T3_1
+    T2_1 -- "no" --> T3_1
+
+    %% ── TIER 3: QUERY_VECTOR ────────────────────────
+    T3_1{"item_vec\navailable?"}
+    T3_1 -- "yes" --> T3_2["QUERY_VECTOR  —  384-dim cosine similarity\nCALL db.index.vector.queryNodes\n     ('review_embedding', 15, $item_vec)\nYIELD node AS r, score AS similarity\nWHERE similarity > 0.72\nMATCH (r)<-[:WROTE]-(other:User)\nWHERE other.locale = $user_locale  ← hard locale filter\nMATCH (r)-[:ABOUT]->(i:Item)-[:IN_CATEGORY]->(cat)\nORDER BY locale_match DESC, similarity DESC\nLIMIT N=5\n⚠ Hard locale filter: returns [] if no same-locale\n  users exist in this cosine neighborhood\nNote: embedding is item_name+category — not spec text"]
+    T3_2 --> OTHERS_DONE
+    T3_1 -- "no" --> T3_3(["others_reviews = []"])
+    T3_3 --> OTHERS_DONE
+
+    %% ════════════════════════════════════════════════
+    %% POST-RETRIEVAL  —  backfill + override
+    %% ════════════════════════════════════════════════
+    OTHERS_DONE(["others_reviews  ≤ 5 rows"])
+    OTHERS_DONE --> POST1["Backfill (always)\n  if category missing → others[0].category\n  avg_rating  = mean(others[].rating)\n  review_count = len(others)"]
+    POST1 --> OVERRIDE["★  AUTHORITATIVE OVERRIDE  —  always runs last\nitem_meta.title            = request.item_name\nitem_meta.price_ngn        = request.price_ngn\nitem_meta.item_description = request.item_description  (if provided)\nGuarantees: caller's data wins over all graph / backfill values"]
+    OVERRIDE --> END(["→  Step 4: prompt_build\nown_reviews + others_reviews + item_meta → ICL prompt"])
+</div>
+
+<h3>LLM provider swap — how it works</h3>
+<p>All three call sites (<code>call_generate_cypher</code>, <code>call_review_stream</code>, <code>call_rating</code>) dispatch on a single <code>LLM_PROVIDER</code> environment variable at call time. Both providers implement the same Pydantic output contracts — <code>RetrievalQuery{cypher}</code> and <code>ReviewRating{rating}</code> — so switching providers requires no code changes, only an env var. The table below shows what each provider uses per call type:</p>
+
+<table>
+<tr><th>Call</th><th>Purpose</th><th>Gemini 2.5 Flash</th><th>Llama 3.3 70B (Groq)</th></tr>
+<tr><td><strong>Call 0</strong> (optional)</td><td>LLM Cypher generation</td><td><code>generate_content</code> · <code>response_schema=RetrievalQuery</code></td><td><code>/chat/completions</code> · JSON schema injected in system msg</td></tr>
+<tr><td><strong>Call 1</strong></td><td>Streaming review text</td><td><code>generate_content_stream</code> · yields <code>chunk.text</code></td><td>SSE <code>data:</code> lines · decoded <code>delta.content</code></td></tr>
+<tr><td><strong>Call 2</strong></td><td>Structured rating int</td><td><code>generate_content</code> · <code>response_schema=ReviewRating</code> · <code>response.parsed</code></td><td><code>response_format: json_object</code> · <code>model_validate_json</code></td></tr>
+</table>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="pipeline">4. Offline Pipeline (pipeline/)</h2>
+<p>Entrypoint: <code>python -m pipeline.run_pipeline --sample-size 5000 …</code>. Runs once to populate both stores; inference is read-only thereafter.</p>
+
+<div class="mermaid">
+flowchart TD
+    A1["amazon_source<br/>categories: Home_and_Kitchen<br/>Electronics · Cell_Phones_and_Accessories<br/>N=2500 rows"] --> SAMP
+    A2["combined_ecommerce_source<br/>Jumia / Konga NG<br/>N=1500 rows"] --> SAMP
+    A3["google_maps_source<br/>Nigerian places CSV<br/>N=1000 rows"] --> SAMP
+    SAMP["persona_friendly_sample<br/>stratify by user_id<br/>prefer ≥2 reviews · ≥MIN_WORDS(5) words"] --> ENR
+    ENR["enrich_records<br/>compute_stylometry (17 signals)<br/>embed: MiniLM-L6-v2 batch=64<br/>→ 384-dim vectors"] --> ACC
+    ACC["UserAccumulator<br/>aggregate per-user stats<br/>category_rating_bias<br/>MIN_REVIEWS_FOR_PERSONA=3"] --> SQ[("SQLite<br/>personas<br/>category_rating_bias")]
+    ENR --> NW["Neo4jWriter.write_reviews<br/>MERGE User/Item/Review/Category/Platform<br/>MERGE BOUGHT_TOGETHER<br/>create indexes + vector index<br/>batch=500"]
+    NW --> N4[("Neo4j 5<br/>nodes + rels<br/>384-dim cosine vector index")]
 </div>
 
 <h3>4.1 Source ingestion (<code>pipeline/sources.py</code>)</h3>
 <ul>
-  <li><strong>Amazon</strong> — global multi-category reviews, used as the base US-locale corpus.</li>
-  <li><strong>Nigerian e-commerce</strong> — Jumia/Konga combined product reviews keyed on <code>combined_root</code>, joined with <code>load_combined_meta</code> for item metadata.</li>
-  <li><strong>Google Maps</strong> — Nigerian-place reviews, joined with <code>load_nigerian_places</code> to ground locale.</li>
+  <li><strong>Amazon</strong> (<code>McAuley-Lab/Amazon-Reviews-2023</code>) — US-locale corpus, 3 categories: <code>Home_and_Kitchen</code>, <code>Electronics</code>, <code>Cell_Phones_and_Accessories</code>. Includes item metadata: <code>features</code>, <code>description</code>, <code>priceUsd</code>, <code>parentAsin</code>, <code>boughtTogether</code>.</li>
+  <li><strong>Nigerian e-commerce</strong> (<code>combined_ecommerce_source</code>) — Jumia/Konga combined product reviews keyed on <code>asin</code>, joined with <code>load_combined_meta</code> for item metadata including <code>priceNgn</code>. Locale hard-coded to <code>"NG"</code>.</li>
+  <li><strong>Google Maps NG</strong> (<code>google_maps_source</code>) — Nigerian-place reviews from <code>nigeria_reviews.csv</code>, joined with <code>nigeria_places.csv</code> by <code>place_id</code>. Platform: <code>"google_maps_ng"</code>. No price data.</li>
 </ul>
 
-<h3>4.2 Persona-friendly sampling (<code>pipeline/sampler.py</code>)</h3>
-<p>Naive uniform sampling collapses persona signal because most users contribute only a single review. <code>persona_friendly_sample</code> stratifies by <code>user_id</code>, preferring users with ≥ <code>MIN_WORDS_FOR_STYLOMETRY</code>-word reviews and ≥ 2 historical reviews so the persona store contains learnable users instead of singletons.</p>
+<h3>4.2 Persona-friendly sampling</h3>
+<p>Naive uniform sampling collapses persona signal because most users contribute a single review. <code>persona_friendly_sample</code> stratifies by <code>user_id</code>, preferring users with ≥ <code>MIN_WORDS_FOR_STYLOMETRY=5</code>-word reviews and ≥ 2 historical reviews. Target split: 2500 Amazon + 1500 NG e-commerce + 1000 Google Maps = 5000 total records.</p>
 
-<h3>4.3 Enrichment (<code>pipeline/enrichment.py</code>)</h3>
-<p>Two enrichments per record:</p>
-<h4>Stylometry (per review, then aggregated per user)</h4>
+<h3>4.3 Stylometry enrichment (<code>pipeline/enrichment.py</code>)</h3>
+<p>17 signals computed per review then averaged per user into the persona store:</p>
 <pre>compute_stylometry(text) → {
-  avg_sent_len, vocab_richness, exclamation_rate,
-  caps_rate, pidgin_freq, emoji_rate, question_rate,
-  avg_word_len, uppercase_word_rate,
-  naira_mention (bool), price_sensitivity (bool),
-  authenticity_concern (bool)
-}</pre>
-<p><code>pidgin_freq</code> is the share of tokens in a curated <code>PIDGIN_TOKENS</code> lexicon (e.g. <em>"abeg", "wahala", "sef", "shey"</em>); <code>naira_mention</code>/<code>price_sensitivity</code>/<code>authenticity_concern</code> are boolean flags from substring rules — these provide the cultural-voice signal exploited at inference time. Reviews shorter than <code>MIN_WORDS_FOR_STYLOMETRY</code> get an empty dict, deliberately excluding them from the per-user aggregate.</p>
+  avg_sent_len,        # mean sentence length in words
+  vocab_richness,      # type-token ratio (unique / total tokens)
+  exclamation_rate,    # exclamation marks / total tokens
+  caps_rate,           # ALL-CAPS words / total words
+  pidgin_freq,         # share of tokens in PIDGIN_TOKENS lexicon (NG signal)
+  emoji_rate,          # emoji chars / total chars
+  question_rate,       # question marks / total tokens
+  avg_word_len,        # mean characters per token
+  uppercase_word_rate, # words starting with capital / total words
+  naira_mention,       # bool — contains "₦" or "naira"
+  price_sensitivity,   # bool — contains price-comparison language
+  authenticity_concern # bool — contains fake/counterfeit/original language
+}
 
-<h4>Embeddings</h4>
-<p><code>SentenceTransformerEmbedder("all-MiniLM-L6-v2")</code> in CPU batches of <code>EMBED_BATCH</code> (default 64) produces 384-dim vectors written to <code>Review.embedding</code>. A <code>HashingEmbedder</code> fallback (SHA-1 → bucketed token counts, L2-normalised) is used in deterministic test runs to skip the model download.</p>
+PIDGIN_TOKENS = { "na", "sha", "dey", "abeg", "abi", "oga",
+                  "wahala", "nawa", "sabi", "chop", "wey",
+                  "dem", "una", "comot", "wetin", "sef", "joor" }</pre>
+<p>Reviews shorter than <code>MIN_WORDS_FOR_STYLOMETRY=5</code> tokens get an empty stylometry dict and are excluded from per-user aggregation. Boolean flags (<code>price_sensitivity</code>, <code>authenticity_concern</code>) are averaged to produce a per-user rate in [0,1].</p>
 
-<h3>4.4 Per-user aggregation (<code>pipeline/user_accumulator.py</code>)</h3>
-<p><code>UserAccumulator</code> ingests every enriched record, then flushes to SQLite as two tables:</p>
+<h3>4.4 Per-user aggregation</h3>
+<p><code>UserAccumulator</code> ingests every enriched record, then flushes to SQLite. Users with fewer than <code>MIN_REVIEWS_FOR_PERSONA=3</code> reviews are written but flagged <code>is_persona_eligible=0</code>. Two tables:</p>
 <ul>
-  <li><strong>personas</strong> — one row per <code>user_id</code> with <code>locale</code>, <code>platform</code>, <code>review_count</code>, <code>rating_mean</code>, <code>rating_std</code>, <code>rating_skew</code>, <code>top_categories</code> (JSON), and the mean of every stylometry metric.</li>
-  <li><strong>category_rating_bias</strong> — <code>(user_id, category) → (mean, count)</code>; lets inference predict ratings <em>within</em> the target category instead of the user's global mean.</li>
+  <li><strong>personas</strong> — one row per <code>user_id</code>: <code>locale</code>, <code>platform</code>, <code>review_count</code>, <code>rating_mean</code>, <code>rating_std</code>, <code>rating_skew</code>, <code>top_categories</code> (JSON array), plus mean of all 12 stylometry metrics above.</li>
+  <li><strong>category_rating_bias</strong> — <code>(user_id, category) → (mean, count)</code>; used at inference to predict ratings <em>within</em> the target category rather than the user's global mean.</li>
 </ul>
-<p>An <code>is_persona_eligible</code> flag marks users with enough reviews/words to drive ICL.</p>
+<p>A <code>selected</code> boolean flag marks hand-curated "featured" personas shown in the sidebar (1 NG + up to 15 US).</p>
 
 <h3>4.5 Neo4j write (<code>pipeline/neo4j_writer.py</code>)</h3>
-<p>Idempotent <code>MERGE</code> writes (so reruns are safe), batched at <code>NEO4J_WRITE_BATCH</code>:</p>
-<pre>MERGE (u:User {id: row.user_id}) ON CREATE SET u.locale = …, u.platform = …
-MERGE (i:Item {id: row.item_id}) ON CREATE SET i.title = …, i.brand = …, i.category = …, i.price = …
+<p>Idempotent <code>MERGE</code> writes batched at <code>NEO4J_WRITE_BATCH=500</code>:</p>
+<pre>MERGE (u:User  {id: row.user_id})  ON CREATE SET u.locale = …, u.platform = …
+MERGE (i:Item  {id: row.item_id})  ON CREATE SET
+    i.title=…, i.brand=…, i.store=…, i.category=…, i.subCategory=…,
+    i.locale=…, i.platform=…, i.priceNgn=…, i.priceUsd=…,
+    i.avgRating=…, i.ratingCount=…, i.parentAsin=…, i.childAsins=…,
+    i.features=…, i.description=…, i.imageUrl=…, i.images=…,
+    i.categories=…, i.details=…, i.boughtTogether=…, i.boughtTogetherCount=…
 MERGE (cat:Category {name: row.category})
 MERGE (plt:Platform {name: row.platform})
-MERGE (r:Review  {id: row.review_id}) ON CREATE SET r.text = …, r.rating = …, r.embedding = …, …
+MERGE (r:Review {id: row.review_id}) ON CREATE SET
+    r.text=…, r.rating=…, r.title=…, r.wordCount=…, r.timestamp=…,
+    r.locale=…, r.platform=…, r.embedding=…, r.stylometry=…,
+    r.verifiedPurchase=…, r.helpfulVote=…, r.images=…
 MERGE (u)-[:WROTE {timestamp: row.timestamp}]->(r)
 MERGE (r)-[:ABOUT]->(i)
 MERGE (i)-[:IN_CATEGORY]->(cat)
-MERGE (i)-[:SOLD_ON]->(plt)</pre>
-<p>Indexes are created at the end of the write:</p>
-<pre>CREATE INDEX user_id        FOR (u:User)   ON (u.id)
-CREATE INDEX item_id        FOR (i:Item)   ON (i.id)
-CREATE INDEX review_id      FOR (r:Review) ON (r.id)
-CREATE INDEX review_locale  FOR (r:Review) ON (r.locale)
-CREATE INDEX item_category  FOR (i:Item)   ON (i.category)
+MERGE (i)-[:SOLD_ON]->(plt)
+MERGE (i1)-[:BOUGHT_TOGETHER]->(i2)  -- for each pair in boughtTogether list</pre>
+<p>Indexes created post-write:</p>
+<pre>CREATE INDEX user_id         FOR (u:User)   ON (u.id)
+CREATE INDEX item_id         FOR (i:Item)   ON (i.id)
+CREATE INDEX review_id       FOR (r:Review) ON (r.id)
+CREATE INDEX review_locale   FOR (r:Review) ON (r.locale)
+CREATE INDEX item_category   FOR (i:Item)   ON (i.category)
+CREATE INDEX item_parent_asin FOR (i:Item)  ON (i.parentAsin)
+CREATE INDEX item_store      FOR (i:Item)   ON (i.store)
 CREATE VECTOR INDEX review_embedding
   FOR (r:Review) ON (r.embedding)
   OPTIONS { indexConfig: {
@@ -263,26 +416,33 @@ CREATE VECTOR INDEX review_embedding
 
 <div class="mermaid">
 graph LR
-    U["User<br/>id · locale · platform"] -- WROTE<br/>(timestamp) --> R["Review<br/>id · text · rating · title<br/>wordCount · timestamp<br/>locale · platform · embedding[384]"]
-    R -- ABOUT --> I["Item<br/>id · title · brand<br/>category · subCategory<br/>locale · platform · price"]
+    U["User<br/>id · locale · platform"] -- "WROTE<br/>(timestamp)" --> R["Review<br/>id · text · rating · title<br/>wordCount · timestamp<br/>locale · platform<br/>embedding[384] · stylometry<br/>verifiedPurchase · helpfulVote · images"]
+    R -- ABOUT --> I["Item<br/>id · title · brand · store<br/>category · subCategory<br/>locale · platform<br/>priceNgn · priceUsd<br/>avgRating · ratingCount<br/>parentAsin · childAsins<br/>features · description<br/>imageUrl · images · categories<br/>details · boughtTogether"]
     I -- IN_CATEGORY --> C["Category<br/>name"]
     I -- SOLD_ON --> P["Platform<br/>name"]
+    I -- BOUGHT_TOGETHER --> I2["Item<br/>(related)"]
 </div>
 
-<h3>5.1 SQLite tables (used at inference)</h3>
+<h3>5.1 Property name note</h3>
+<p>Item properties in the graph use <strong>camelCase</strong> (<code>priceNgn</code>, <code>priceUsd</code>, <code>avgRating</code>, <code>ratingCount</code>). <code>QUERY_ITEM_META</code> aliases these to snake_case for Python consumption. This distinction matters when writing raw Cypher in LLM-generated queries.</p>
+
+<h3>5.2 SQLite tables (used at inference)</h3>
 <pre>personas(
   user_id PK, locale, platform, review_count,
   rating_mean, rating_std, rating_skew, top_categories,
   avg_sent_len, vocab_richness, exclamation_rate, caps_rate,
   pidgin_freq, emoji_rate, question_rate,
   naira_mention_rate, price_sensitivity, authenticity_concern,
-  is_persona_eligible
+  is_persona_eligible, selected
 )
-category_rating_bias(user_id, category, mean, count)   -- PK (user_id, category)</pre>
+category_rating_bias(user_id, category, mean, count)  -- PK (user_id, category)</pre>
+
+<h3>5.3 Featured persona selection</h3>
+<p><code>load_featured_personas</code> always returns exactly 1 NG persona (highest <code>review_count</code> with <code>selected=1</code>) + up to 15 US personas (selected pool first, then unselected pool as top-up). This guarantees the sidebar always includes a Nigerian user for demo purposes.</p>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="inference">6. Online Inference Flow</h2>
-<p>Driver: <code>inference/task_a.py :: simulate_review(request, emit, dry_run=False)</code>. Every step calls <code>await emit({"type": "step", "id": …, "label": …})</code> before doing work, so the UI can render the agent rail in real time.</p>
+<p>Driver: <code>inference/task_a.py :: simulate_review(request, emit, dry_run=False)</code>. Every step calls <code>await emit({"type": "step", …})</code> before doing work so the UI renders the agent rail in real time. The <code>--dry-run</code> CLI flag prints the assembled prompts without making LLM calls.</p>
 
 <div class="mermaid">
 sequenceDiagram
@@ -292,150 +452,262 @@ sequenceDiagram
     participant ORCH as simulate_review
     participant SQL as SQLite
     participant N4J as Neo4j
-    participant LLM as Gemini 2.5 Flash
+    participant EMB as MiniLM-L6-v2
+    participant LLM as Gemini / Groq
 
-    UI->>API: WS connect → JSON {user_id, item_id?, item_name?, item_description?, raw_message?}
+    UI->>API: WS connect → JSON {user_id*, item_name*, price_ngn*, item_description?, raw_message?}
     API->>ORCH: simulate_review(req, emit)
 
     Note over ORCH: Step 1 — persona_load
-    ORCH->>SQL: load_persona(user_id)
-    SQL-->>ORCH: persona row + cat_bias dict
+    ORCH->>SQL: SELECT * FROM personas WHERE user_id=?
+    SQL-->>ORCH: 17 signals + cat_bias dict
     alt persona None
         ORCH-->>UI: {type:"error", message:"User not in persona store"}
     end
 
-    Note over ORCH: Step 2 — item_resolve
-    ORCH->>N4J: QUERY_ITEM_META(item_id)
-    N4J-->>ORCH: title/brand/category/avg_rating/review_count OR null
-    Note right of ORCH: branch = "ppr" if item_meta<br/>else "query" if raw_message<br/>else "vector"
+    Note over ORCH: Step 2 — item_resolve (metadata only — no branch assignment)
+    ORCH->>N4J: QUERY_RESOLVE_BY_TITLE(item_name)<br/>CONTAINS match → shortest title
+    alt title match found
+        ORCH->>N4J: QUERY_ITEM_META(resolved_id) — for category + brand only
+    else no match
+        Note right of ORCH: fallback item_meta with empty brand/category
+    end
+    Note right of ORCH: item_category = item_meta.category<br/>item_brand = item_meta.brand<br/>branch = "category" / "query" / "vector"
 
-    Note over ORCH: Step 3 — retrieval
-    opt branch != "ppr" and user_query
-        ORCH->>ORCH: embed(user_query) with MiniLM (384d)
-    end
-    par fetch_own_reviews (session 1)
-        ORCH->>N4J: QUERY_A_SAME_CAT or QUERY_OWN_RECENT (K=3)
-        N4J-->>ORCH: own reviews [K]
-    and fetch_others_reviews (session 2)
-        opt raw_message present
-            ORCH->>LLM: call_generate_cypher(schema + query, locale)
-            LLM-->>ORCH: RetrievalQuery {cypher}
-            ORCH->>N4J: run generated Cypher
+    Note over ORCH: Step 3 — retrieval (2 independent sessions)
+    ORCH->>EMB: encode(item_name + ' ' + item_category)<br/>name+category only — avoids spec-text domain mismatch
+    EMB-->>ORCH: 384-dim item_vec (used as vector fallback)
+    par Session 1 — style anchors (own reviews)
+        alt category known
+            ORCH->>N4J: QUERY_A_SAME_CAT_BY_NAME(user_id, category, K=3)<br/>user's past reviews in same category
+        else no category
+            ORCH->>N4J: QUERY_OWN_RECENT(user_id, K=3)
         end
-        Note right of ORCH: on empty/error → fallback chain
-        ORCH->>N4J: QUERY_B (locale-weighted)  if item_id known
-        ORCH->>N4J: QUERY_VECTOR (cosine > 0.72)  else
-        N4J-->>ORCH: others reviews [N=5]
+        N4J-->>ORCH: own_reviews[≤3]: text, rating, item_name, category, age_months
+    and Session 2 — content anchors (others' reviews — 3-tier chain)
+        alt Tier 1: category known
+            ORCH->>N4J: QUERY_CATEGORY_REVIEWS(category, user_locale, N=5)<br/>locale+recency scored — no item_id needed
+        end
+        alt Tier 2: category empty OR Tier 1 returned 0 rows
+            ORCH->>LLM: call_generate_cypher(schema + item_name + brand + category)
+            LLM-->>ORCH: RetrievalQuery{cypher}
+            ORCH->>N4J: run validated Cypher (MATCH/CALL guard)
+        end
+        alt Tier 3: all above return 0 → vector last resort
+            ORCH->>N4J: QUERY_VECTOR(item_vec, user_locale, N=5)<br/>cosine > 0.72, locale re-ranked
+        end
+        N4J-->>ORCH: others_reviews[≤5]: text, rating, locale, score
     end
-    ORCH->>ORCH: _build_graph_data(user, item, own, others)
+
+    Note over ORCH: Backfill: category from others[0] if still missing<br/>avg_rating = mean(others[].rating)
+    Note over ORCH: ★ AUTHORITATIVE OVERRIDE (always last)<br/>item_meta.title = request.item_name<br/>item_meta.price_ngn = request.price_ngn<br/>item_meta.item_description = request.item_description
+
+    ORCH->>ORCH: _build_graph_data(user, item, own, others)<br/>→ nodes[user,item,reviews,categories] + edges[WROTE,ABOUT,IN_CATEGORY]
     ORCH-->>UI: {type:"graph_data", branch, nodes[], edges[]}
 
     Note over ORCH: Step 4 — prompt_build
-    ORCH->>ORCH: derive_signals · cultural_voice · format_own/others · build_system/user prompts
+    ORCH->>ORCH: derive_signals(persona, own, others, item_meta)<br/>→ 13 computed signals including price_sensitivity
+    ORCH->>ORCH: get_cultural_voice_block(persona) — NG only
+    ORCH->>ORCH: format_own_reviews · format_others_reviews
+    ORCH->>ORCH: build_system_prompt + build_user_prompt
 
-    Note over ORCH: Step 5 — llm_review (Call 2 of 2 visible)
-    ORCH->>LLM: call_review_stream(system, user)
+    Note over ORCH: Step 5 — llm_review (Call 1 of 2)
+    ORCH->>LLM: call_review_stream(system_prompt, user_prompt)
     LLM-->>ORCH: token stream
-    ORCH-->>UI: {type:"token", text} × N
+    ORCH-->>UI: {type:"token", text} × N (streaming)
 
-    Note over ORCH: Step 6 — llm_rating
-    ORCH->>LLM: call_rating(rating_prompt) — structured ReviewRating{rating:int}
-    LLM-->>ORCH: int 1–5 (clamped) OR None → fallback to category_mean
+    Note over ORCH: Step 6 — llm_rating (Call 2 of 2)
+    ORCH->>LLM: call_rating(review_text + rating_profile)
+    LLM-->>ORCH: ReviewRating{rating:int} OR None
+    Note right of ORCH: fallback: round(clamp(category_mean ?? rating_mean ?? 3.5, 1, 5))
     ORCH-->>UI: {type:"final", user_id, item_id, review_text, predicted_rating, locale, retrieval_branch}
+</div>
+
+<div class="callout">
+  <h4>★ Authoritative override — why it runs last</h4>
+  <p>After retrieval, the backfill code can overwrite <code>item_meta["title"]</code> with the closest graph match (e.g. "K350" when "MX Keys S" was requested). The authoritative override block is therefore placed <em>after</em> all retrieval and backfill, unconditionally writing <code>request.item_name</code> and <code>request.price_ngn</code> into <code>item_meta</code>. This guarantees the caller's explicitly submitted product name and price always reach the LLM, regardless of what the graph resolved.</p>
 </div>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="retrieval">7. Retrieval Subsystem</h2>
-<p>Three branches are selectable at runtime (<code>branch ∈ {ppr, query, vector}</code>) and the choice is recorded on every <code>graph_data</code> event and the <code>final</code> payload, giving an auditable retrieval-provenance label for every generation.</p>
+<p>The retrieval goal is <strong>behavioural context prediction</strong>, not product lookup. The system gathers evidence of how users write about products in a given category so the generative model can predict the most likely review. Three branch labels are recorded on every <code>graph_data</code> event and the <code>final</code> payload for auditable provenance.</p>
 
 <table>
-<tr><th>Branch</th><th>Trigger</th><th>Cypher used for content anchors</th></tr>
-<tr><td><span class="tag">ppr</span></td><td><code>item_id</code> resolves in <code>QUERY_ITEM_META</code></td><td><code>QUERY_B</code>: locale-weighted scoring on other users' reviews of the exact item.</td></tr>
-<tr><td><span class="tag">query</span></td><td>No <code>item_id</code> but <code>raw_message</code> present</td><td><strong>LLM-generated Cypher</strong> (Call 1) executed against the schema; falls through to <code>QUERY_B</code> or <code>QUERY_VECTOR</code> on empty/error.</td></tr>
-<tr><td><span class="tag">vector</span></td><td>No <code>item_id</code> and no <code>raw_message</code></td><td><code>QUERY_VECTOR</code>: <code>db.index.vector.queryNodes('review_embedding', 15, $item_vec)</code> with cosine &gt; 0.72 and locale re-ranking.</td></tr>
+<tr><th>Branch</th><th>Trigger</th><th>Own reviews (style anchors)</th><th>Others' reviews (content anchors)</th></tr>
+<tr><td><span class="tag">category</span></td><td>Category resolved from graph metadata (primary path)</td><td><code>QUERY_A_SAME_CAT_BY_NAME</code>: user's past reviews filtered by <code>cat.name CONTAINS category</code></td><td><code>QUERY_CATEGORY_REVIEWS</code>: locale+recency scored, scoped to category — no item_id needed</td></tr>
+<tr><td><span class="tag">query</span></td><td>No category resolved; <code>raw_message</code> or <code>item_name</code> present</td><td><code>QUERY_OWN_RECENT</code> (any category fallback)</td><td>LLM-generated Cypher (schema + item_name + brand + category) → <code>QUERY_VECTOR</code></td></tr>
+<tr><td><span class="tag">vector</span></td><td>No category, no user query (rare)</td><td><code>QUERY_OWN_RECENT</code></td><td><code>QUERY_VECTOR</code>: cosine &gt; 0.72 on <code>item_name + category</code> embedding</td></tr>
 </table>
 
-<h3>7.1 Style anchors — user's own reviews (always)</h3>
-<pre>QUERY_A_SAME_CAT  — user's K=3 most-recent reviews in the same category as target
-QUERY_A_ANY_CAT   — backfills if same-category yields &lt; K
-QUERY_OWN_RECENT  — used when item_id is unknown (no category to filter on)</pre>
-<p>Selecting style anchors from the <em>same</em> category first is what lets the model imitate domain-specific vocabulary (a "fashion" review reads nothing like an "electronics" review even from the same user).</p>
+<h3>7.1 Style anchors — user's own reviews (Session 1)</h3>
+<pre>QUERY_A_SAME_CAT_BY_NAME  -- primary path when category known
+  MATCH (u:User)-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item)-[:IN_CATEGORY]->(cat:Category)
+  WHERE toLower(cat.name) CONTAINS toLower($category)
+  ORDER BY age ASC  LIMIT K=3
+  -- surfaces user's writing style + rating tendency in this product space
 
-<h3>7.2 Content anchors — other users' reviews (locale-weighted)</h3>
-<pre>QUERY_B (PPR-style, executed when item_id is known):
-  MATCH (target:Item {id:$item_id})&lt;-[:ABOUT]-(r:Review)&lt;-[:WROTE]-(other:User)
+QUERY_OWN_RECENT  -- fallback when no category resolved: any category, most recent K reviews</pre>
+<p>Category-scoped own reviews are more useful than "any recent reviews" because they capture domain-specific vocabulary, rating calibration, and price-sensitivity patterns. A user who rates Electronics harshly but Fashion generously has different stylometric signals per category.</p>
+
+<h3>7.2 Content anchors — others' reviews (Session 2)</h3>
+<pre>QUERY_CATEGORY_REVIEWS  (Tier 1 — primary, deterministic):
+  MATCH (i:Item)-[:IN_CATEGORY]->(cat:Category)
+  WHERE cat.name CONTAINS $category OR i.category CONTAINS $category
+  MATCH (r:Review)-[:ABOUT]->(i), (other:User)-[:WROTE]->(r)
   WHERE other.id &lt;&gt; $user_id
-  WITH r, other,
-       CASE WHEN other.locale = u.locale THEN 1.0 ELSE 0.3 END AS locale_w,
-       duration.between(datetime({epochSeconds:r.timestamp}), datetime()).months AS age
-  WITH r, (locale_w * 0.6 + (1/(1 + age/12.0)) * 0.4) AS score
-  ORDER BY score DESC LIMIT $N</pre>
-<p>The score combines a locale prior (0.6 weight) with a recency decay (0.4, halving roughly every 12 months). Same-locale recent reviews dominate, but the 0.3 floor for cross-locale lets US reviews still contribute when the NG corpus is thin.</p>
+  score = locale_w × 0.6 + recency_decay × 0.4
+    locale_w = 1.0 if r.locale = user_locale else 0.3
+    recency_decay = 1÷(1+age÷12)
+  ORDER BY score DESC  LIMIT N=5
+  -- no item_id needed; uses indexed item_category field for performance
 
-<h3>7.3 LLM Cypher generation (branch <span class="tag">query</span>)</h3>
-<p><code>inference/retrieval.py :: generate_retrieval_query</code> injects the full schema (node labels, properties, relationships, vector index name, three example query patterns) into a prompt and asks Gemini for a single <code>RetrievalQuery {cypher: string}</code> JSON object via <code>response_mime_type: "application/json"</code> + Pydantic <code>response_schema</code>. The string is validated to start with <code>MATCH</code> or <code>CALL</code> (read-only guard) and executed with <code>$user_locale</code> and <code>$item_vec</code> bound. On empty rows or exceptions the call falls through to <code>QUERY_B</code> → <code>QUERY_VECTOR</code>.</p>
-<div class="callout">
-  <h4>Read-only guard</h4>
-  <p>The instruction prompt forbids <code>CREATE / DELETE / SET / MERGE</code>; the post-validation also accepts only <code>MATCH</code>/<code>CALL</code> starts. There is no Cypher parser in the loop, but the structured-output contract eliminates markdown fences and natural-language prose that would otherwise need regex-stripping.</p>
-</div>
+QUERY_VECTOR  (Tier 3 — last resort):
+  embed_text = item_name + ' ' + item_category   ← name+category only
+  CALL db.index.vector.queryNodes('review_embedding', 15, $item_vec)
+  WHERE similarity &gt; 0.72
+  ORDER BY locale_match DESC, similarity DESC  LIMIT N=5
+  Note: embedding only name+category avoids spec-text/review-text vocabulary mismatch</pre>
 
-<h3>7.4 Vector fallback</h3>
-<p><code>$item_vec</code> is computed at request time by encoding <code>user_query = raw_message + item_name + item_description + item_id</code> through the same <code>all-MiniLM-L6-v2</code> used in the pipeline (cached globally on first call). The 0.72 cosine threshold was chosen empirically — below it, retrieved reviews are off-topic; above it, recall collapses on the smaller Nigerian corpus.</p>
+<h3>7.3 LLM Cypher generation (Tier 2 fallback)</h3>
+<p><code>generate_retrieval_query(user_query, user_locale, item_name, item_brand, item_category)</code> now receives <strong>structured product fields</strong> as separate prompt variables (not a freeform blob). The LLM injects the full graph schema plus explicit brand and category anchors to write targeted Cypher. Fires only when <code>QUERY_CATEGORY_REVIEWS</code> returns 0 rows (category not in graph or too narrow). Falls through to <code>QUERY_VECTOR</code> on Cypher error or empty result.</p>
 
-<h3>7.5 Subgraph builder</h3>
-<p>After fetch, <code>_build_graph_data</code> constructs a node/edge JSON payload (<code>user</code>, <code>item</code> with <code>isTarget</code>, <code>review</code>, <code>category</code>) that is forwarded as a single <code>graph_data</code> event for live NVL rendering. The same payload is the empirical artifact the paper can publish per example.</p>
+<p>The generation prompt enforces four neutrality rules to avoid biased ICL examples:</p>
+
+<table>
+<tr><th>Rule</th><th>Mechanism</th></tr>
+<tr><td><strong>Rating mix</strong></td><td>Target distribution across 8 rows: 2 positive (≥4★), 1 negative (≤2★), 1 neutral (3★ same locale), 4 best-match any rating. Use UNION or multiple MATCH branches with explicit WHERE r.rating conditions.</td></tr>
+<tr><td><strong>Scope</strong></td><td>Prioritise category + brand. Only expand to adjacent subCategories if &lt;4 results. Block generic keyword matches (e.g. "battery", "camera") that cross product categories.</td></tr>
+<tr><td><strong>Anti user-bias</strong></td><td>Cap single-user dominance at 2 reviews: <code>WITH u, collect(r)[..2] AS capped UNWIND capped AS r</code></td></tr>
+<tr><td><strong>Multi-item spread</strong></td><td>Distribute across at least 2 distinct items — model receives signal from more than one product's review pool.</td></tr>
+</table>
+
+<h3>7.4 Title resolution (<code>QUERY_RESOLVE_BY_TITLE</code>)</h3>
+<pre>MATCH (i:Item)
+WHERE toLower(i.title) CONTAINS toLower($keyword)
+RETURN i.id AS id, i.title AS title
+ORDER BY size(i.title) ASC   -- shortest match first
+LIMIT 1</pre>
+<p>Title resolution is used only to extract <code>category</code> and <code>brand</code> from the graph for use as retrieval anchors. It no longer promotes the request to a PPR/item-specific retrieval branch. Whether or not title resolves, the primary retrieval path is always category-scoped.</p>
+
+<h3>7.5 Graph data builder</h3>
+<p>After fetch, <code>_build_graph_data</code> constructs a node/edge JSON payload for live NVL rendering. Node types: <code>user</code>, <code>item</code> (with <code>isTarget=True</code> on the requested item), <code>review</code> (with <code>text</code> snippet, <code>rating</code>, <code>score</code>, <code>age</code>), <code>category</code>. Edge labels: <code>WROTE</code>, <code>ABOUT</code>, <code>IN_CATEGORY</code>. The payload is forwarded as a <code>graph_data</code> WebSocket event and is the empirical artifact the paper can publish per example.</p>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="prompt">8. ICL Prompt Composition</h2>
-<p>Implemented in <code>inference/prompt_builder.py</code>. Five logical blocks fold into two physical messages (<code>system_instruction</code> and <code>contents</code>) for Gemini:</p>
+<p>Implemented in <code>inference/prompt_builder.py</code>. Five logical blocks fold into two physical messages (<code>system_instruction</code> and <code>contents</code>) for Gemini. Block A+E → system prompt; Blocks B+C+D → user prompt.</p>
 
 <table>
 <tr><th>Block</th><th>Source</th><th>What it contributes</th></tr>
-<tr><td>A — Shopper profile</td><td>SQLite <code>personas</code></td><td>Rating tendency label (<em>tough critic / slightly harsh / balanced / generous</em>), σ, vocab-richness label, emotion label, Pidgin label (NG only), target word-count derived from the user's own historical mean.</td></tr>
-<tr><td>B — Style exemplars</td><td>Neo4j <code>QUERY_A_*</code></td><td>K=3 of the user's own past reviews (text, rating, item name, months-ago) — the strongest persona-fidelity signal.</td></tr>
-<tr><td>C — Content grounding</td><td>Neo4j <code>QUERY_B</code> / Cypher-gen / vector</td><td>N=5 reviews from other users about the target item (or semantically near items), each flagged with locale (🇳🇬 for NG) and the retrieval score.</td></tr>
-<tr><td>D — Item metadata</td><td>Neo4j <code>QUERY_ITEM_META</code> (or backfilled from C)</td><td>Brand, title, category, ₦price, item-average rating across <em>n</em> reviews.</td></tr>
-<tr><td>E — Cultural voice overlay (NG only)</td><td>Static + persona flags</td><td>Pidgin instruction tier (<em>frequent / occasional / none</em>), value-for-money cue when <code>price_sensitivity &gt; 0.3</code>, authenticity cue when <code>authenticity_concern &gt; 0.3</code>, plus standing notes on delivery / reseller / availability framing.</td></tr>
+<tr><td>A — Shopper profile</td><td>SQLite <code>personas</code> + derived signals</td><td>Rating tendency label, σ, vocab-richness label, emotion label, target word-count, Pidgin label (NG only), <strong>price sensitivity label</strong> (all locales: HIGH if &gt;0.3, MODERATE if &gt;0.1).</td></tr>
+<tr><td>B — Style exemplars</td><td>Neo4j <code>QUERY_A_*</code></td><td>K=3 of the user's own past reviews: item name, rating, age, text excerpt (300 chars). Strongest persona-fidelity signal.</td></tr>
+<tr><td>C — Content grounding</td><td>Neo4j <code>QUERY_CATEGORY_REVIEWS</code> / LLM Cypher / <code>QUERY_VECTOR</code></td><td>N=5 reviews from other users about the target item, each with locale flag (🇳🇬 for NG) and retrieval score weight.</td></tr>
+<tr><td>D — Item metadata</td><td><code>item_meta</code> (graph + request override)</td><td>Brand, title, category as pipe-separated header. <strong>Price as dedicated labeled field</strong>. <strong>Product details</strong> (item_description). Item-average rating + review count. User's historical category average.</td></tr>
+<tr><td>E — Cultural voice overlay</td><td>Static rules + persona flags (NG only)</td><td>Pidgin instruction tier (frequent / occasional / none). Value-for-money cue when <code>price_sensitivity &gt; 0.3</code>. Authenticity cue when <code>authenticity_concern &gt; 0.3</code>. Standing notes on delivery / reseller / local availability framing.</td></tr>
 </table>
 
-<h3>8.1 Signal derivation</h3>
-<p><code>derive_signals(persona, own, others, item_meta)</code> turns raw statistics into human-readable labels that the LLM follows reliably. Examples:</p>
-<pre>rating_mean &lt; 3.3   → "tough critic"
-rating_mean &lt; 3.8   → "slightly harsh"
-rating_mean &lt; 4.3   → "balanced"
-else                → "generous"
+<h3>8.1 Signal derivation (<code>derive_signals</code>)</h3>
+<p>Converts raw persona statistics into 13 human-readable signals passed into both prompt builders:</p>
+<pre>-- Rating tendency
+rating_mean &lt; 3.3  → tendency = "tough critic"
+            &lt; 3.8  → "slightly harsh"
+            &lt; 4.3  → "balanced"
+            else   → "generous"
 
-vocab_richness &gt; 0.7 → "rich and varied"
-                &gt; 0.4 → "moderate"
-                else  → "simple and direct"
+-- Vocabulary
+vocab_richness &gt; 0.7  → vocab_label = "rich and varied"
+               &gt; 0.4  → "moderate"
+               else   → "simple and direct"
 
-pidgin_freq (NG only)  &gt; 0.05 → "frequent"
-                        &gt; 0.01 → "occasional"
-                        else   → "none"
+-- Emotional tone
+exclamation_rate &gt; 0.03 → emotion_label = "expressive"
+                 &gt; 0.01 → "moderate"
+                 else   → "understated"
 
-avg_own_words = clamp(mean(historical word_counts), 5, 150)  # target length</pre>
+-- Pidgin (NG locale only)
+pidgin_freq &gt; 0.05 → pidgin_label = "frequent"
+            &gt; 0.01 → "occasional"
+            else   → "none"
 
-<h3>8.2 Rating call (separate)</h3>
-<p>After the streamed review text completes, a second call (<code>call_rating</code>) sends the generated review plus the user's <code>rating_mean</code> / <code>category_mean</code> / tendency and asks for a single integer 1–5, validated by the <code>ReviewRating</code> Pydantic schema and clamped server-side. If the model returns <code>None</code>, the system falls back to <code>round(clamp(category_mean ?? rating_mean ?? 3.5, 1, 5))</code>, guaranteeing a numeric output.</p>
+-- Price sensitivity (ALL locales)
+price_sensitivity &gt; 0.3 → price_awareness = "HIGH — explicitly comment on value for money"
+                  &gt; 0.1 → "MODERATE — mention price if it stands out"
+                  else  → no price line in system prompt
+
+-- Target length
+avg_own_words = clamp(mean(historical word_counts), 5, 150)
+
+-- Category mean (for rating calibration)
+category_mean = cat_bias[target_category].mean  OR  rating_mean (global fallback)</pre>
+
+<h3>8.2 System prompt structure</h3>
+<pre>TASK: Write a single authentic product review as if you are this specific user.
+Output only the review text — no preamble, no labels, no quotes.
+
+SHOPPER PROFILE:
+- Locale: {locale}  Platform: {platform}
+- Overall rating tendency: {tendency} (mean {rating_mean:.2f}★, σ={rating_std:.2f})
+- Vocabulary: {vocab_label}
+- Emotional tone: {emotion_label}
+- Target length: ~{avg_own_words} words
+- Pidgin usage: {pidgin_label} — mirror this  [NG locale only]
+- Price sensitivity: {HIGH|MODERATE} — ...   [if price_sensitivity &gt; 0.1]
+
+CRITICAL STYLE RULE: ...
+
+NIGERIAN VOICE NOTES:            [NG locale only — Block E]
+- Blend Pidgin naturally: ...    [if pidgin_freq &gt; 0.05]
+- Reference value for money ...  [if price_sensitivity &gt; 0.3]
+- Flag fake-product risk ...     [if authenticity_concern &gt; 0.3]
+- Nigerian shopping context: delivery times, reseller markups, local availability.</pre>
+
+<h3>8.3 User prompt structure</h3>
+<pre>HOW THIS SHOPPER WRITES (their own past reviews):
+[1] {item_name} — {rating}★ ({age_months}mo ago)
+    "{text excerpt 300 chars}"
+[2] ...
+[3] ...
+
+WHAT OTHERS SAY ABOUT THIS ITEM:
+[1] 🇳🇬 {rating}★ (w={score:.2f}): "{text excerpt 200 chars}"
+[2] US  {rating}★ (w={score:.2f}): "..."
+...
+
+ITEM TO REVIEW:
+{brand} | {title} | {category}
+Price: {currency}{price:,.0f}          ← dedicated labeled field; currency=$  for US, ₦ for NG
+                                         US locale falls back to price_ngn if price_usd is None
+Product details: {item_description}    ← only if item_description provided
+(Item context: avg {avg_rating:.1f}★ across {review_count} reviews)
+This user's historical average for this category: {category_mean:.2f}★ ({count} reviews)
+
+Write the review now:</pre>
+
+<h3>8.4 Rating call (Call 2 of 2)</h3>
+<p>After the streamed review text completes, a second LLM call sends the generated review plus the user's <code>rating_mean</code> / <code>category_mean</code> / tendency and asks for a single integer 1–5, validated by the <code>ReviewRating</code> Pydantic schema and clamped server-side. Fallback hierarchy if model returns None: <code>round(clamp(category_mean ?? rating_mean ?? 3.5, 1, 5))</code>.</p>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="llm">9. LLM Layer</h2>
 
 <h3>9.1 Provider abstraction (<code>inference/llm_client.py</code>)</h3>
-<p>Three public entry points — <code>call_review_stream</code>, <code>call_rating</code>, <code>call_generate_cypher</code> — each dispatch on <code>LLM_PROVIDER ∈ {gemini, groq}</code> to a backend pair. Both backends are coerced into identical Pydantic-validated outputs:</p>
-<pre>class RetrievalQuery(BaseModel): cypher: str          # MATCH/CALL/RETURN only
-class ReviewRating (BaseModel): rating: int           # 1–5</pre>
+<p>Three public entry points dispatch on <code>LLM_PROVIDER ∈ {gemini, groq}</code>:</p>
+<table>
+<tr><th>Entry point</th><th>Purpose</th><th>Output contract</th></tr>
+<tr><td><code>call_generate_cypher(prompt)</code></td><td>LLM Cypher generation (Tier 2 fallback: when Tier 1 category query returns 0 rows)</td><td><code>RetrievalQuery{cypher: str}</code> — validated to start with MATCH/CALL</td></tr>
+<tr><td><code>call_review_stream(system, user)</code></td><td>Streaming review generation</td><td>Async generator of text token strings</td></tr>
+<tr><td><code>call_rating(prompt)</code></td><td>Structured rating prediction</td><td><code>ReviewRating{rating: int}</code> clamped to [1,5], or None on failure</td></tr>
+</table>
 
-<h3>9.2 Gemini backend</h3>
+<h3>9.2 Gemini backend (primary)</h3>
 <ul>
-  <li><strong>Streaming</strong>: <code>client.aio.models.generate_content_stream(model, contents, config=GenerateContentConfig(system_instruction=…))</code> yields <code>chunk.text</code> tokens.</li>
-  <li><strong>Structured</strong>: <code>generate_content(config=GenerateContentConfig(response_mime_type="application/json", response_schema=ReviewRating))</code> returns <code>response.parsed</code> already-validated.</li>
+  <li><strong>Streaming</strong>: <code>client.aio.models.generate_content_stream(model, contents, config=GenerateContentConfig(system_instruction=…))</code> → yields <code>chunk.text</code> tokens.</li>
+  <li><strong>Structured</strong>: <code>generate_content(config=GenerateContentConfig(response_mime_type="application/json", response_schema=ReviewRating))</code> → <code>response.parsed</code> already-validated Pydantic object. Eliminates regex JSON-scraping and the <code>finish_reason=2</code> truncation failure mode.</li>
 </ul>
 
-<h3>9.3 Groq backend</h3>
+<h3>9.3 Groq backend (fallback, <code>LLM_PROVIDER=groq</code>)</h3>
 <ul>
   <li>OpenAI-compatible <code>/chat/completions</code> over <code>httpx.AsyncClient</code>; SSE <code>data:</code> lines decoded to <code>delta.content</code> tokens.</li>
-  <li>Structured outputs forced via <code>response_format: {type:"json_object"}</code> plus an injected JSON-schema system message; parsed with <code>schema.model_validate_json</code>.</li>
+  <li>Structured outputs forced via <code>response_format: {type:"json_object"}</code> + injected JSON-schema system message; parsed with <code>schema.model_validate_json</code>.</li>
+  <li>Model: <code>llama-3.3-70b-versatile</code>.</li>
 </ul>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
@@ -445,21 +717,30 @@ class ReviewRating (BaseModel): rating: int           # 1–5</pre>
 <table>
 <tr><th>Method · Path</th><th>Purpose</th></tr>
 <tr><td><code>GET /health</code></td><td>Liveness probe.</td></tr>
-<tr><td><code>GET /personas/featured</code></td><td>8 hand-selected eligible personas for the sidebar.</td></tr>
-<tr><td><code>GET /personas?search=&amp;locale=&amp;limit=&amp;offset=</code></td><td>Search 25k personas (capped at 200/page).</td></tr>
-<tr><td><code>GET /personas/{user_id}</code></td><td>Full <code>PersonaDetail</code> incl. <code>cat_bias</code>.</td></tr>
-<tr><td><code>POST /simulate</code></td><td>Non-streaming fallback — collects events server-side and returns the <code>final</code> payload.</td></tr>
+<tr><td><code>GET /personas/featured</code></td><td>1 NG + up to 15 US eligible personas for the sidebar.</td></tr>
+<tr><td><code>GET /personas?search=&amp;locale=&amp;limit=&amp;offset=</code></td><td>Search ~25k personas by user_id substring and/or locale (capped at 200/page).</td></tr>
+<tr><td><code>GET /personas/{user_id}</code></td><td>Full <code>PersonaDetail</code> with all 17 signals + <code>cat_bias</code> list.</td></tr>
+<tr><td><code>POST /simulate</code></td><td>Non-streaming fallback — collects all events server-side and returns the <code>final</code> payload.</td></tr>
 <tr><td><code>WS /ws/simulate</code></td><td>Primary path. Client sends one JSON request; server streams typed events to completion.</td></tr>
 </table>
 
-<h3>10.2 WebSocket events</h3>
+<h3>10.2 Request schema</h3>
+<pre>SimulateRequest {
+  user_id:          string   REQUIRED  -- persona lookup key
+  item_name:        string   REQUIRED  -- product name; always wins over graph title
+  price_ngn:        float    REQUIRED  -- price in caller's currency; always wins over graph price
+  item_description: string?  optional  -- surfaced in "Product details:" prompt field
+  raw_message:      string?  optional  -- natural language → LLM Cypher retrieval branch
+}</pre>
+
+<h3>10.3 WebSocket events (server → client)</h3>
 <table>
 <tr><th>type</th><th>Fields</th><th>Description</th></tr>
-<tr><td><code>step</code></td><td><code>id, label, detail?</code></td><td>Progress milestone (<code>persona_load · item_resolve · retrieval · prompt_build · llm_review · llm_rating</code>) — animates the agent-steps rail.</td></tr>
-<tr><td><code>graph_data</code></td><td><code>branch, nodes[], edges[]</code></td><td>The retrieval subgraph; rendered by NVL Canvas.</td></tr>
-<tr><td><code>token</code></td><td><code>text</code></td><td>Streaming token from the review-generation call.</td></tr>
-<tr><td><code>final</code></td><td><code>user_id, item_id, review_text, predicted_rating, locale, retrieval_branch</code></td><td>Terminal event — connection closes after.</td></tr>
-<tr><td><code>error</code></td><td><code>message</code></td><td>Fatal error — connection closes after.</td></tr>
+<tr><td><code>step</code></td><td><code>id, label, detail?</code></td><td>Progress milestone: <code>persona_load · item_resolve · retrieval · prompt_build · llm_review · llm_rating</code> — animates the agent-steps rail.</td></tr>
+<tr><td><code>graph_data</code></td><td><code>branch, nodes[], edges[]</code></td><td>Retrieval subgraph with node types (user/item/review/category), scores, ages; rendered by NVL Canvas.</td></tr>
+<tr><td><code>token</code></td><td><code>text</code></td><td>Single streaming token from review-generation call. Client concatenates.</td></tr>
+<tr><td><code>final</code></td><td><code>user_id, item_id, review_text, predicted_rating, locale, retrieval_branch</code></td><td>Terminal event — WS connection closes after this.</td></tr>
+<tr><td><code>error</code></td><td><code>message</code></td><td>Fatal error — WS connection closes after this.</td></tr>
 </table>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
@@ -467,9 +748,9 @@ class ReviewRating (BaseModel): rating: int           # 1–5</pre>
 
 <pre>ChatPage (c.$threadId.tsx)
 ├── Sidebar / SidebarContent
-│   ├── PersonaSearch          — debounced GET /personas?search
-│   ├── Featured personas      — GET /personas/featured
-│   ├── PersonaDetailModal     — full stylometry + cat_bias chart
+│   ├── PersonaSearch          — debounced GET /personas?search (user_id substring)
+│   ├── Featured personas      — GET /personas/featured (1 NG + up to 15 US)
+│   ├── PersonaDetailModal     — full 17 signals + cat_bias chart
 │   └── Thread list
 ├── MessageView (per turn)
 │   ├── AgentSteps             — animated rail + pulsing bot icon, hydrated by step events
@@ -479,14 +760,22 @@ class ReviewRating (BaseModel): rating: int           # 1–5</pre>
 │   │   │   · forceDirected layout · captions on canvas (disableWebGL=true)
 │   │   │   · mouseEventCallbacks { onNodeClick → setSelectedId; onHover → cursor:pointer }
 │   │   │   · zoom/pan/drag enabled · auto-fit after data lands
-│   │   └── NodeDetailsPanel   ← floating overlay (absolute, not flex sibling)
+│   │   └── NodeDetailsPanel   ← position:absolute overlay (prevents canvas reflow on open)
 │   │                            shows id · type · label · text · score · age
 │   └── ReviewCard             — streamed text + final star rating
-└── Composer                   — natural-language product input → POST {user_id, raw_message}</pre>
+└── Composer                   — 3-field form: item_name* · item_description* · price*
+                                 All three required; send button disabled until all filled.
+                                 Price shown with currency symbol from persona locale ($ or ₦)</pre>
+
+<h3>11.1 Form validation</h3>
+<p>The Composer validates three fields before enabling the send button. <code>ProductFields.price_ngn</code> is typed as <code>number</code> (not nullable). The WebSocket request type in <code>ws.ts</code> marks <code>item_name</code> and <code>price_ngn</code> as required, matching the FastAPI Pydantic model. This prevents sending an incomplete request that would produce a degraded generation.</p>
+
+<h3>11.2 Price currency display</h3>
+<p>The form always submits the price into <code>price_ngn</code>. The currency symbol shown in the placeholder ($ or ₦) is derived from <code>persona.locale</code>. On the backend, <code>build_user_prompt</code> reads <code>price_usd</code> for US locale but falls back to <code>price_ngn</code> when <code>price_usd</code> is None — which is the common case since submitted prices always land in <code>price_ngn</code>.</p>
 
 <div class="callout">
   <h4>Why the details panel is an overlay, not a flex sibling</h4>
-  <p>NVL's <code>ClickInteraction</code> distinguishes a click from a drag by mouse movement between <code>mousedown</code> and <code>mouseup</code>. When the panel was a flex sibling animating <code>width: 0 → 260</code>, the canvas reflowed mid-click, the hit-test coords shifted, and NVL silently dropped the event as a drag. Anchoring the panel as <code>position: absolute</code> keeps the canvas geometry stable across the open/close animation.</p>
+  <p>NVL's <code>ClickInteraction</code> distinguishes a click from a drag by mouse movement between <code>mousedown</code> and <code>mouseup</code>. When the panel was a flex sibling animating <code>width: 0 → 260</code>, the canvas reflowed mid-click, hit-test coords shifted, and NVL silently dropped the event as a drag. Anchoring the panel as <code>position: absolute</code> keeps the canvas geometry stable across the open/close animation.</p>
 </div>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
@@ -494,24 +783,32 @@ class ReviewRating (BaseModel): rating: int           # 1–5</pre>
 
 <div class="grid-2">
 <div class="callout">
-  <h4>Gemini 2.5 Flash + native structured outputs</h4>
-  <p>Flash's latency budget suits the multi-call pattern (Cypher gen, review stream, rating) and the <code>google-genai</code> SDK's <code>response_mime_type=application/json</code> + Pydantic <code>response_schema</code> eliminates regex JSON-scraping and removes the <code>finish_reason=2</code> truncation failure mode we saw with prompt-only JSON requests.</p>
+  <h4>Request fields are authoritative — override runs last</h4>
+  <p>Retrieval backfill code can overwrite <code>item_meta["title"]</code> with a graph-matched product name (e.g. resolving "MX Keys S" to "K350"). The authoritative override block runs unconditionally <em>after</em> all retrieval and backfill, writing <code>request.item_name</code> and <code>request.price_ngn</code> into <code>item_meta</code>. This guarantees the caller's explicitly submitted data always reaches the LLM prompt.</p>
 </div>
 <div class="callout">
   <h4>Separate review-text vs rating calls</h4>
-  <p>A single call producing both prose and an integer star rating gives inconsistent calibration (text/rating contradiction in roughly a quarter of generations in informal tests). Splitting them lets the rating call attend to the <em>completed</em> review and explicitly reference <code>rating_mean</code> / <code>category_mean</code> / tendency, producing scores aligned to the persona's historical bias.</p>
+  <p>A single call producing both prose and an integer star rating gives inconsistent calibration (text/rating contradiction in roughly a quarter of informal test generations). Splitting them lets the rating call attend to the <em>completed</em> review and explicitly reference <code>rating_mean</code> / <code>category_mean</code> / tendency, producing scores aligned to the persona's historical bias.</p>
 </div>
 <div class="callout">
-  <h4>Schema-aware Cypher generation + fallback chain</h4>
-  <p>Letting the LLM choose between title-CONTAINS, locale filtering, and vector search per request is more flexible than a fixed template. Pairing it with a deterministic <code>QUERY_B → QUERY_VECTOR</code> fallback bounds the failure mode — bad/empty Cypher never produces an empty prompt context.</p>
+  <h4>Gemini 2.5 Flash + native structured outputs</h4>
+  <p>Flash's latency budget suits the multi-call pattern. The <code>google-genai</code> SDK's <code>response_mime_type=application/json</code> + Pydantic <code>response_schema</code> eliminates regex JSON-scraping and the <code>finish_reason=2</code> truncation failure mode seen with prompt-only JSON requests.</p>
+</div>
+<div class="callout">
+  <h4>Four-rule neutrality in LLM Cypher generation</h4>
+  <p>Unconstrained Cypher generation tends to fetch positive reviews (because they're more common and rank higher in cosine similarity). The rating-mix rule (2 pos / 1 neg / 1 neutral / 4 best-match), anti-user-bias cap, scope guard, and multi-item spread are injected into the generation prompt to produce balanced ICL content anchors that don't inflate the LLM's sentiment baseline.</p>
 </div>
 <div class="callout">
   <h4>SQLite for persona stats, Neo4j for traversal</h4>
-  <p>Persona lookups are point-reads by <code>user_id</code> — sub-millisecond on SQLite, zero ops cost, ships as a single file with the repo. Graph traversal (locale-weighted scoring, category hops, vector search) requires Cypher's expressiveness and a native vector index — neither replicable cheaply on SQLite.</p>
+  <p>Persona lookups are point-reads by <code>user_id</code> — sub-millisecond on SQLite, zero ops cost, ships as a single file. Graph traversal (locale-weighted scoring, category hops, vector search, title CONTAINS) requires Cypher's expressiveness and a native vector index — neither replicable cheaply on SQLite.</p>
+</div>
+<div class="callout">
+  <h4>Two independent sessions for own + others retrieval</h4>
+  <p>The Neo4j async driver socket is not safe for concurrent reads on a single session. <code>fetch_retrieval</code> opens two independent async sessions (s1 for own reviews, s2 for others) sequentially, avoiding driver-level race conditions while keeping both queries logically parallel in the code.</p>
 </div>
 <div class="callout">
   <h4>WebSocket over SSE</h4>
-  <p>The <code>graph_data</code> payload is a large structured object (nodes + edges); SSE's text-only framing would force JSON escape-encoding. WebSocket also keeps a single bidirectional channel open for future stop / regenerate signals.</p>
+  <p>The <code>graph_data</code> payload is a large structured object (nodes + edges). SSE's text-only framing would force JSON escape-encoding. WebSocket also keeps a single bidirectional channel open for future stop / regenerate signals.</p>
 </div>
 <div class="callout">
   <h4>Lazy client-only NVL mount</h4>
@@ -522,11 +819,96 @@ class ReviewRating (BaseModel): rating: int           # 1–5</pre>
 <!-- ─────────────────────────────────────────────────────────────────── -->
 <h2 id="limits">13. Limitations &amp; Future Work</h2>
 <ul>
-  <li><strong>Cold persona</strong> — users not present in SQLite return an <code>error</code> event. No zero-shot fallback yet (could be a "synthetic persona" derived from declared demographics).</li>
-  <li><strong>Stylometry granularity</strong> — current features are surface-level (counts and ratios). Adding syntactic complexity (dependency-tree depth) and topic distributions per user would tighten persona fidelity.</li>
-  <li><strong>Cultural overlay scope</strong> — Block E is Nigerian-specific. A locale registry keyed on <code>persona.locale</code> would let the system generalise to other markets.</li>
-  <li><strong>Aspect graph</strong> — the pipeline ingests review text but does not yet extract aspects (ABSA). Adding <code>(Review)-[:HAS_ASPECT]→(Aspect)</code> would let retrieval target aspects (battery, sizing, delivery) rather than whole-review similarity.</li>
-  <li><strong>Eval harness</strong> — currently informal; a held-out user / item split with rating MAE and a stylometric distance metric (cosine on the stylometry vector) would quantify persona fidelity for the paper.</li>
+  <li><strong>Cold persona</strong> — users absent from SQLite return an <code>error</code> event. No zero-shot fallback yet (could be a "synthetic persona" derived from declared demographics or item category alone).</li>
+  <li><strong>Category resolution fragility</strong> — <code>QUERY_RESOLVE_BY_TITLE</code> uses a CONTAINS match to get the category/brand metadata. A product not in the graph at all (no CONTAINS match) falls to LLM Cypher or vector, which may miss niche product spaces. Category normalisation (e.g. "earbuds" → "Headphones") would improve recall.</li>
+  <li><strong>US price field gap</strong> — the form always submits into <code>price_ngn</code>; <code>price_usd</code> is populated only from graph-stored Amazon metadata. The fallback <code>price_usd OR price_ngn</code> in <code>build_user_prompt</code> works correctly but mixes currency semantics.</li>
+  <li><strong>Stylometry granularity</strong> — current features are surface-level (counts and ratios). Adding syntactic complexity (dependency-tree depth) and per-category topic distributions would tighten persona fidelity.</li>
+  <li><strong>Cultural overlay scope</strong> — Block E is Nigerian-specific. A locale registry keyed on <code>persona.locale</code> would generalise to other markets (GH, KE, ZA).</li>
+  <li><strong>Aspect graph</strong> — the pipeline ingests review text but does not extract aspects (ABSA). Adding <code>(Review)-[:HAS_ASPECT]→(Aspect)</code> would let retrieval target specific dimensions (battery, sizing, delivery) rather than whole-review similarity.</li>
+  <li><strong>Eval harness</strong> — implemented; see <a href="#evaluation">§14 Evaluation Layer</a>.</li>
+  <li><strong>LLM price grounding</strong> — even with <code>Price: $2</code> explicitly in the prompt, models with strong product-price priors from training data may not surface the price in review text unless the system prompt also contains an explicit "comment on value for money" instruction (gated on <code>price_sensitivity &gt; 0.1</code>).</li>
+</ul>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="evaluation">14. Evaluation Layer</h2>
+<p>
+  The evaluator is a <strong>pure downstream consumer</strong>: it hands a request to the
+  existing workflow, receives the workflow's output plus the references the workflow used,
+  and scores. It must not call Neo4j, must not compute item embeddings, and must not import
+  <code>fetch_retrieval</code>. The system owns the workflow; the evaluator owns scoring.
+</p>
+<p>
+  <strong>Scoring formula:</strong>
+  <code>Score = 1 − (0.25·EmotionalToneError + 0.25·SentimentAttitudeError + 0.5·TopicRelevanceError)</code>
+</p>
+
+<div class="mermaid">
+flowchart TB
+  A["evaluation/run_eval.py\nbuild SimulateRequest"] --> B["simulate_review()\n6-step pipeline (unchanged)"]
+  B --> C["Step 7 (post-generation)\nfetch ground_truth_reviews from KG\nbuild anchor_reviews from others_reviews the LLM saw"]
+  C --> D["return result with evaluation_context"]
+  D --> E{"references\navailable?"}
+  E -- "ground_truth_reviews non-empty" --> F["Tier 1: exact-item KG reviews"]
+  E -- "only anchor_reviews" --> G["Tier 2: proxy reviews (similar items)"]
+  E -- "both empty" --> H["null result + notes\n(no LLM-synthetic fallback)"]
+  F --> I["ReviewGenerationEvaluator.evaluate(pred, refs)"]
+  G --> I
+  I --> J["batch HF pipeline: emotion + sentiment\nbatch encode: topic embeddings"]
+  J --> K["Score = 1 − (0.25E + 0.25S + 0.5T)"]
+</div>
+
+<h3>Model Selection</h3>
+<table>
+  <thead><tr><th>Component</th><th>Model</th><th>Reason</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Emotion</td>
+      <td><code>j-hartmann/emotion-english-distilroberta-base</code></td>
+      <td>7-class, distilled (CPU), review-style training data</td>
+    </tr>
+    <tr>
+      <td>Sentiment</td>
+      <td><code>cardiffnlp/twitter-roberta-base-sentiment-latest</code></td>
+      <td>2022 retrain handles informal/Pidgin-blended text</td>
+    </tr>
+    <tr>
+      <td>Topic</td>
+      <td><code>all-MiniLM-L6-v2</code> (shared singleton)</td>
+      <td>Same embedding space as KG vector index</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Reference Source Tiers</h3>
+<table>
+  <thead><tr><th>Tier</th><th>When</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><code>item_id</code> resolves in Neo4j</td>
+      <td><code>Review.text</code> nodes for exact item, sorted by length then recency</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Item not in KG</td>
+      <td><code>others_reviews</code> the LLM saw (proxy from similar items)</td>
+    </tr>
+    <tr>
+      <td>—</td>
+      <td>Both empty</td>
+      <td>Skip — return null result with <code>notes</code> (no LLM-synthetic fallback)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Accuracy Optimisations</h3>
+<ul>
+  <li>Length-ranked, capped reference set (top 5, ≥30 chars) — longer reviews carry stronger emotion/sentiment/topic signal</li>
+  <li>Batched HF pipeline calls + batched embedding encode — single call per model avoids tokenizer setup overhead</li>
+  <li><code>truncation=True, max_length=512</code> on both classifier pipelines — prevents silent truncation at character boundaries</li>
+  <li><code>normalize_embeddings=True</code> → cosine similarity collapses to dot product (faster, no norm edge cases)</li>
+  <li>Per-reference topic-error variance exposed in report — high variance flags noisy evaluations</li>
+  <li>Ground truth fetched <em>after</em> LLM generation — prevents contamination of the inference path</li>
 </ul>
 
 <script>

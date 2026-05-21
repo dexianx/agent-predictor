@@ -13,7 +13,9 @@ async def test_generate_cypher_is_read_only():
     from inference.retrieval import generate_retrieval_query
 
     cypher = await generate_retrieval_query(
-        "Write a review for Sony WH-1000XM4 wireless headphones", "NG"
+        "Write a review for Apple AirPods Pro 2 wireless earbuds",
+        "US",
+        item_category="Home Audio & Theater",
     )
     assert cypher
     first_token = cypher.strip().split()[0].upper()

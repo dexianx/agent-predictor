@@ -20,7 +20,7 @@ cd ui && bun install
 ### Environment variables
 Copy `.env.example` to `.env` in the project root and fill in:
 ```
-# LLM: gemini (default) or groq
+# LLM: gemini (default) | groq | cerebras
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
 GEMINI_MODEL=gemini-2.5-flash
@@ -29,6 +29,12 @@ GEMINI_MODEL=gemini-2.5-flash
 # LLM_PROVIDER=groq
 # GROQ_API_KEY=your_groq_key
 # GROQ_MODEL=llama-3.3-70b-versatile
+
+# For Cerebras (OpenAI-compatible — https://inference-docs.cerebras.ai/resources/openai):
+# LLM_PROVIDER=cerebras
+# CEREBRAS_API_KEY=your_cerebras_key
+# CEREBRAS_MODEL=gpt-oss-120b
+# Optional override: LLM_MODEL=llama3.1-8b
 
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j

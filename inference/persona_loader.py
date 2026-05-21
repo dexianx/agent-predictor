@@ -1,19 +1,37 @@
 import sqlite3
 import json
+import os
 
 
-def load_persona(db_path: str, user_id: str) -> dict | None:
+def load_persona(db_path: str, user_id: str, source: str | None = None) -> dict | None:
+    source = source or os.environ.get("PERSONA_SOURCE", "production")
+    if source == "eval_train":
+        persona_table = "eval_personas_train"
+        bias_table = "eval_category_rating_bias_train"
+        split_name = os.environ.get("EVAL_SPLIT_NAME", "task_a_v1")
+        persona_where = "split_name = ? AND user_id = ?"
+        persona_params = (split_name, user_id)
+        bias_where = "split_name = ? AND user_id = ?"
+        bias_params = (split_name, user_id)
+    else:
+        persona_table = "personas"
+        bias_table = "category_rating_bias"
+        persona_where = "user_id = ?"
+        persona_params = (user_id,)
+        bias_where = "user_id = ?"
+        bias_params = (user_id,)
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT * FROM personas WHERE user_id = ?", (user_id,)
+        f"SELECT * FROM {persona_table} WHERE {persona_where}", persona_params
     ).fetchone()
     if row is None:
         conn.close()
         return None
     bias_rows = conn.execute(
-        "SELECT category, mean, count FROM category_rating_bias WHERE user_id = ?",
-        (user_id,),
+        f"SELECT category, mean, count FROM {bias_table} WHERE {bias_where}",
+        bias_params,
     ).fetchall()
     conn.close()
     return {

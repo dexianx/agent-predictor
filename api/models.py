@@ -10,6 +10,9 @@ class SimulateRequest(BaseModel):
     item_id: str = ""            # optional; when set, uses graph item node
     item_description: str | None = None
     raw_message: str | None = None   # natural language → LLM Cypher retrieval
+    price_usd: float | None = None   # Amazon / US listings
+    item_category: str = ""      # optional hint when product not in KG
+    item_brand: str = ""         # optional hint when product not in KG
 
 
 class SimulateResponse(BaseModel):

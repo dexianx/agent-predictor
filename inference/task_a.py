@@ -11,7 +11,10 @@ from typing import Callable, Awaitable
 from neo4j import AsyncGraphDatabase
 
 from .persona_loader import load_persona
-from .retrieval import resolve_item, resolve_item_by_title, fetch_retrieval
+from .retrieval import (
+    resolve_item, resolve_item_by_title, fetch_retrieval,
+    fetch_item_ground_truth_reviews,
+)
 from .prompt_builder import (
     derive_signals,
     get_cultural_voice_block,
@@ -59,11 +62,16 @@ class SimulateRequest:
     item_id: str = ""
     item_description: str | None = None
     raw_message: str | None = None
+    price_usd: float | None = None
+    # When the product is not in the KG, pass Amazon/category hints so retrieval
+    # can still scope to related items (e.g. eval fixtures, API callers).
+    item_category: str = ""
+    item_brand: str = ""
 
 
 def _retrieval_query(request: SimulateRequest) -> str:
-    """Text passed to graph retrieval (LLM Cypher + optional vector fallback)."""
-    parts = [request.raw_message, request.item_name, request.item_description, request.item_id]
+    """Text passed to LLM Cypher generation (not used for embedding)."""
+    parts = [request.raw_message, request.item_name, request.item_description]
     return " ".join(p.strip() for p in parts if p and str(p).strip())
 
 
@@ -87,43 +95,52 @@ async def simulate_review(
                     "message": f"User {request.user_id} not in persona store"})
         return None
 
-    # ── Step 2: item resolve ──────────────────────────────────────────────────
-    item_label = request.item_id or user_query[:80] or "unknown"
+    # ── Step 2: item resolve (metadata only — category/brand for retrieval scoping) ────
+    item_label = request.item_name[:80] or user_query[:80] or "unknown"
     await emit({"type": "step", "id": "item_resolve",
-                "label": "Resolving item in knowledge graph",
+                "label": "Resolving item metadata",
                 "detail": item_label})
     item_meta = await resolve_item(driver, request.item_id) if request.item_id else None
-    if item_meta:
-        branch = "ppr"
-    elif user_query:
-        branch = "query"
-    else:
-        branch = "vector"
+    resolved_item_id = request.item_id or ""
 
-    # If no item_id but we have a name, try to resolve by title so we can use
-    # the well-constrained PPR queries instead of the freeform LLM path.
-    if not request.item_id and request.item_name:
+    # Title-based resolve gets us category/brand — does NOT drive branch selection
+    if not item_meta and request.item_name:
         resolved_id = await resolve_item_by_title(driver, request.item_name)
         if resolved_id:
-            request.item_id = resolved_id
             item_meta = await resolve_item(driver, resolved_id)
-            branch = "ppr"
+            resolved_item_id = resolved_id
 
     if not item_meta:
         item_meta = {
             "title":        request.item_name or user_query[:120] or "Unknown product",
-            "brand":        "",
-            "category":     "",
+            "brand":        request.item_brand or "",
+            "category":     request.item_category or "",
             "sub_category": "",
             "price_ngn":    None,
             "price_usd":    None,
             "avg_rating":   None,
             "review_count": 0,
         }
+    else:
+        if request.item_category and not item_meta.get("category"):
+            item_meta["category"] = request.item_category
+        if request.item_brand and not item_meta.get("brand"):
+            item_meta["brand"] = request.item_brand
+
+    item_category = item_meta.get("category") or request.item_category or ""
+    item_brand    = item_meta.get("brand") or request.item_brand or ""
 
     # ── Step 3: retrieval ─────────────────────────────────────────────────────
+    # Branch priority: category structural → LLM Cypher → vector
+    if item_category:
+        branch = "category"
+    elif user_query:
+        branch = "query"
+    else:
+        branch = "vector"
+
     retrieval_labels = {
-        "ppr": "locale-weighted Cypher",
+        "category": "category-scoped Cypher",
         "query": "LLM-guided Cypher",
         "vector": "vector similarity",
     }
@@ -131,10 +148,12 @@ async def simulate_review(
                 "label": f"Retrieval · {retrieval_labels[branch]}",
                 "detail": "K=3 style anchors · N=5 content anchors"})
 
+    # Embed item_name + category only — avoids spec-text / review-text semantic mismatch
+    embed_text = f"{request.item_name} {item_category}".strip()
     item_vec = None
-    if branch != "ppr" and user_query:
+    if embed_text:
         try:
-            item_vec = get_embedder().encode([user_query], show_progress_bar=False)[0].tolist()
+            item_vec = get_embedder().encode([embed_text], show_progress_bar=False)[0].tolist()
         except Exception:
             item_vec = None
 
@@ -143,16 +162,16 @@ async def simulate_review(
         persona["locale"] or "US", item_vec,
         user_query=user_query,
         item_name=request.item_name or "",
+        item_brand=item_brand,
+        item_category=item_category,
         K=3, N=5,
     )
 
-    if others_reviews and not request.item_id:
-        if others_reviews[0].get("item_name"):
+    if others_reviews:
+        if not request.item_id and others_reviews[0].get("item_name"):
             item_meta["title"] = others_reviews[0]["item_name"]
         if not item_meta.get("category") and others_reviews[0].get("category"):
             item_meta["category"] = others_reviews[0]["category"]
-
-    if branch != "ppr" and others_reviews:
         ratings = [r["rating"] for r in others_reviews if r.get("rating")]
         if ratings:
             item_meta["avg_rating"] = round(sum(ratings) / len(ratings), 2)
@@ -160,7 +179,10 @@ async def simulate_review(
 
     # Request fields are authoritative — applied last so graph/backfill cannot overwrite
     item_meta["title"] = request.item_name
-    item_meta["price_ngn"] = request.price_ngn
+    if request.price_usd is not None:
+        item_meta["price_usd"] = request.price_usd
+    if request.price_ngn:
+        item_meta["price_ngn"] = request.price_ngn
     if request.item_description:
         item_meta["item_description"] = request.item_description
     graph_data["branch"] = branch
@@ -208,13 +230,30 @@ async def simulate_review(
         fallback = signals.get("category_mean") or signals.get("rating_mean") or 3.5
         predicted = round(max(1.0, min(5.0, fallback)))
 
+    # ── Step 7: ground-truth fetch (post-generation — no LLM contamination) ────
+    ground_truth_reviews = await fetch_item_ground_truth_reviews(
+        driver, resolved_item_id, limit=5
+    )
+
+    anchor_reviews = [
+        {"text": r["text"], "rating": r.get("rating"), "locale": r.get("locale")}
+        for r in others_reviews
+        if r.get("text") and len(r["text"].strip()) > 30
+    ]
+
     result = {
         "user_id":          request.user_id,
-        "item_id":          request.item_id or user_query[:80] or "",
+        "item_id":          request.item_id or resolved_item_id or user_query[:80] or "",
         "review_text":      review_text,
         "predicted_rating": predicted,
         "locale":           persona["locale"],
         "retrieval_branch": branch,
+        "evaluation_context": {
+            "item_resolved_in_kg": bool(resolved_item_id),
+            "ground_truth_reviews": ground_truth_reviews,
+            "anchor_reviews":       anchor_reviews,
+            "retrieval_branch":     branch,
+        },
     }
     await emit({"type": "final", **result})
     return result

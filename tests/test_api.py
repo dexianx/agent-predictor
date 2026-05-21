@@ -12,21 +12,27 @@ async def test_health():
 
 
 @pytest.mark.asyncio
-async def test_featured_personas_includes_ng():
+async def test_featured_personas_includes_us_amazon():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.get("/personas/featured")
     assert r.status_code == 200
     locales = {p["locale"] for p in r.json()}
-    assert "NG" in locales
+    assert "US" in locales
 
 
 @pytest.mark.asyncio
 async def test_ws_simulate_full_flow():
     import websockets
 
+    from tests.conftest import TEST_USER_ID, TEST_MESSAGE
+
     payload = json.dumps({
-        "user_id": "NG_KONGA_2ae66f90",
-        "raw_message": "Write a review for Sony headphones",
+        "user_id": TEST_USER_ID,
+        "item_name": "Apple AirPods Pro 2 Wireless Earbuds",
+        "price_ngn": 0.0,
+        "price_usd": 249.99,
+        "raw_message": TEST_MESSAGE,
+        "item_category": "Home Audio & Theater",
     })
     events = []
     async with websockets.connect("ws://localhost:8000/ws/simulate") as ws:
