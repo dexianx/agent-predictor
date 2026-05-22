@@ -25,6 +25,7 @@ from .prompt_builder import (
     build_rating_prompt,
 )
 from .llm_client import call_review_stream, call_calibrated_rating, llm_display_name
+from pipeline.item_embedding_text import build_item_embedding_text, price_bucket
 
 SQLITE_PATH = os.environ.get("SQLITE_PATH", "./personas.db")
 NEO4J_URI  = os.environ.get("NEO4J_URI",  "bolt://localhost:7687")
@@ -33,15 +34,21 @@ NEO4J_PASS = os.environ.get("NEO4J_PASSWORD", "")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
 
 _driver = None
+_driver_loop_id = None
 _embedder = None
 
 
 def get_driver():
-    global _driver
-    if _driver is None:
+    global _driver, _driver_loop_id
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = None
+    if _driver is None or _driver_loop_id != loop_id:
         _driver = AsyncGraphDatabase.driver(
             NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS)
         )
+        _driver_loop_id = loop_id
     return _driver
 
 
@@ -158,8 +165,24 @@ async def simulate_review(
                 "label": f"Retrieval · {retrieval_labels[branch]}",
                 "detail": "K=3 style anchors · N=5 content anchors"})
 
-    # Embed item_name + category only — avoids spec-text / review-text semantic mismatch
-    embed_text = f"{request.item_name} {item_category}".strip()
+    # Embed canonical product metadata for Item.embedding retrieval.
+    embed_text = build_item_embedding_text(
+        {
+            "title": request.item_name or item_meta.get("title"),
+            "brand": item_brand,
+            "store": item_meta.get("store"),
+            "category": item_category,
+            "subCategory": item_meta.get("sub_category"),
+            "priceNgn": request.price_ngn or item_meta.get("price_ngn"),
+            "priceUsd": request.price_usd if request.price_usd is not None else item_meta.get("price_usd"),
+            "features": item_meta.get("features"),
+            "description": request.item_description or item_meta.get("item_description"),
+            "details": item_meta.get("details"),
+            "boughtTogetherCount": item_meta.get("boughtTogetherCount"),
+            "avgRating": item_meta.get("avg_rating"),
+            "ratingCount": item_meta.get("review_count"),
+        }
+    )
     item_vec = None
     if embed_text:
         try:
@@ -174,6 +197,10 @@ async def simulate_review(
         item_name=request.item_name or "",
         item_brand=item_brand,
         item_category=item_category,
+        item_price_bucket=price_bucket(
+            request.price_usd if request.price_usd is not None else item_meta.get("price_usd"),
+            request.price_ngn or item_meta.get("price_ngn"),
+        ),
         user_tendency=user_tendency,
         K=3, N=5,
     )
@@ -202,6 +229,7 @@ async def simulate_review(
     if request.item_description:
         item_meta["item_description"] = request.item_description
     item_meta["item_rating_stats"] = item_rating_stats
+    branch = graph_data.get("branch") or branch
     graph_data["branch"] = branch
     graph_data["item_rating_stats"] = item_rating_stats
     await emit({"type": "graph_data", **graph_data})
@@ -244,12 +272,82 @@ async def simulate_review(
                 "detail": "Call 2 of 2 · numeric rating"})
     rating_prompt = build_rating_prompt(review_text, persona, signals)
     rating_evidence = await call_calibrated_rating(rating_prompt)
-    predicted = rating_evidence["rating"] if rating_evidence else None
-    if predicted is None:
+    r_llm_raw = rating_evidence["rating"] if rating_evidence else None
+    if r_llm_raw is None:
         fallback = signals.get("category_mean") or signals.get("rating_mean") or 3.5
-        predicted = round(max(1.0, min(5.0, fallback)))
-        rating_evidence = {"rating": predicted, "confidence": 0.0, "calibration_reason": "fallback"}
-    predicted = _calibrate_rating(predicted, review_text, signals)
+        r_llm_raw = round(max(1.0, min(5.0, fallback)))
+        rating_evidence = {"rating": r_llm_raw, "confidence": 0.0, "calibration_reason": "fallback"}
+    r_llm = _calibrate_rating(r_llm_raw, review_text, signals)
+    predicted = r_llm
+
+    rating_head_context = {
+        "enabled": _flag_enabled("USE_RATING_HEAD", "0"),
+        "mode": os.environ.get("RATING_BLEND_MODE", "blended"),
+        "r_struct_float": None,
+        "r_struct_int": None,
+        "r_llm": r_llm,
+        "r_llm_raw": r_llm_raw,
+        "r_final": float(r_llm),
+        "final_rating": int(r_llm),
+        "error": None,
+    }
+    if rating_head_context["enabled"]:
+        try:
+            from .rating_head import build_rating_features, get_rating_head, apply_thresholds
+
+            rating_head = get_rating_head()
+            features = build_rating_features(
+                user_id=request.user_id,
+                item_id=request.item_id or resolved_item_id or "",
+                item_payload=item_meta,
+                persona=persona,
+                exact_item_stats=item_rating_stats,
+                own_reviews=own_reviews,
+                others_reviews=others_reviews,
+                similar_items=[],
+                exclude_review_id=request.heldout_review_id or None,
+                review_text=review_text,
+                signals=signals,
+            )
+            coverage = rating_head.coverage(features)
+            r_struct_float = rating_head.predict_float(features)
+            r_struct_int = apply_thresholds(r_struct_float, rating_head.thresholds)
+            mode = str(rating_head_context["mode"] or "blended").lower()
+            if mode == "catboost_only":
+                r_final = r_struct_float
+                predicted = r_struct_int
+            elif mode in {"llm_only", "current", "pass8"}:
+                r_final = float(r_llm)
+                predicted = int(r_llm)
+            elif mode == "gated":
+                r_final = float(r_llm)
+                predicted = int(r_llm)
+                if coverage["feature_coverage"] >= 0.75 and abs(r_struct_float - float(r_llm)) <= 0.75:
+                    r_final = max(1.0, min(5.0, 0.25 * r_struct_float + 0.75 * float(r_llm)))
+                    predicted = apply_thresholds(r_final, rating_head.thresholds)
+            else:
+                user_category = float(features.get("user_category_mean_excl") or r_struct_float)
+                community = float(features.get("community_rating_mean") or r_struct_float)
+                r_final = (
+                    0.55 * r_struct_float
+                    + 0.35 * float(r_llm)
+                    + 0.05 * user_category
+                    + 0.05 * community
+                )
+                r_final = max(1.0, min(5.0, r_final))
+                predicted = apply_thresholds(r_final, rating_head.thresholds)
+            rating_head_context.update(
+                {
+                    "r_struct_float": r_struct_float,
+                    "r_struct_int": r_struct_int,
+                    "r_final": float(r_final),
+                    "final_rating": int(predicted),
+                    "feature_coverage": coverage,
+                }
+            )
+        except Exception as exc:
+            rating_head_context["error"] = f"{type(exc).__name__}: {exc}"
+            predicted = r_llm
 
     # ── Step 7: ground-truth fetch (post-generation — no LLM contamination) ────
     ground_truth_reviews = await fetch_item_ground_truth_reviews(
@@ -275,6 +373,7 @@ async def simulate_review(
             "anchor_reviews":       anchor_reviews,
             "retrieval_branch":     branch,
             "rating_evidence":      rating_evidence,
+            "rating_head":          rating_head_context,
             "item_rating_stats":     item_rating_stats,
             "pass16": {
                 "rating_mix_enabled": _flag_enabled("PASS16_RATING_MIX", "0"),

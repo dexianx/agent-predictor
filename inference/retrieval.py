@@ -1,7 +1,9 @@
 import asyncio
+import math
 import os
 from neo4j import AsyncSession
 from .llm_client import call_generate_cypher
+from pipeline.item_embedding_text import price_bucket
 
 DB_SCHEMA = """
 Neo4j graph schema for the review knowledge base:
@@ -60,7 +62,9 @@ Relationships:
   (Item)-[:SOLD_ON]->(Platform)
   (Item)-[:BOUGHT_TOGETHER]->(Item)  -- may have no data
 
-Vector index: "review_embedding" on Review.embedding (384-dim cosine)
+Vector indexes:
+  - "review_embedding" on Review.embedding (384-dim cosine)
+  - "item_embedding" on Item.embedding (384-dim cosine)
 
 Indexes: user_id, item_id, review_id, review_locale, item_category,
          item_parent_asin, item_store
@@ -77,6 +81,10 @@ Useful query patterns:
   -- Vector search:
   CALL db.index.vector.queryNodes('review_embedding', 10, $vec)
   YIELD node AS r, score RETURN r, score
+
+  -- Item-vector search:
+  CALL db.index.vector.queryNodes('item_embedding', 20, $vec)
+  YIELD node AS i, score RETURN i, score
 
   -- Verified-purchase filter:
   MATCH (r:Review)-[:ABOUT]->(i:Item) WHERE r.verifiedPurchase = true RETURN r
@@ -256,6 +264,81 @@ ORDER BY CASE WHEN other.locale = $user_locale THEN 1 ELSE 0 END DESC,
 LIMIT $N
 """
 
+QUERY_SIMILAR_ITEMS_BY_EMBEDDING = """
+CALL db.index.vector.queryNodes('item_embedding', $top_k, $embedding)
+YIELD node AS similarItem, score
+WHERE score >= $min_score
+  AND ($target_item_id = "" OR similarItem.id <> $target_item_id)
+  AND ($category = "" OR similarItem.category = $category)
+OPTIONAL MATCH (similarItem)<-[:ABOUT]-(r:Review)<-[:WROTE]-(u:User)
+WITH similarItem, score, r, u
+ORDER BY coalesce(r.helpfulVote, 0) DESC, coalesce(r.timestamp, 0) DESC
+WITH similarItem, score,
+     collect(CASE WHEN r IS NULL THEN NULL ELSE {
+       review_id: r.id,
+       user_id: u.id,
+       rating: r.rating,
+       text: r.text,
+       locale: r.locale,
+       platform: r.platform,
+       verified_purchase: r.verifiedPurchase,
+       helpful_vote: r.helpfulVote,
+       timestamp: r.timestamp
+     } END) AS reviews
+RETURN
+  similarItem.id AS item_id,
+  similarItem.title AS item_title,
+  similarItem.brand AS brand,
+  similarItem.store AS store,
+  similarItem.category AS category,
+  similarItem.subCategory AS sub_category,
+  similarItem.priceUsd AS price_usd,
+  similarItem.priceNgn AS price_ngn,
+  similarItem.avgRating AS avg_rating,
+  similarItem.ratingCount AS rating_count,
+  score AS item_similarity,
+  reviews AS reviews
+ORDER BY score DESC
+LIMIT $limit
+"""
+
+QUERY_SIMILAR_ITEM_REVIEWS_BY_EMBEDDING = """
+CALL db.index.vector.queryNodes('item_embedding', $top_k, $embedding)
+YIELD node AS similarItem, score
+WHERE score >= $min_score
+  AND ($target_item_id = "" OR similarItem.id <> $target_item_id)
+  AND ($category = "" OR similarItem.category = $category)
+MATCH (r:Review)-[:ABOUT]->(similarItem)
+MATCH (u:User)-[:WROTE]->(r)
+WHERE u.id <> $user_id
+RETURN
+  similarItem.id AS item_id,
+  similarItem.title AS item_title,
+  similarItem.brand AS brand,
+  similarItem.category AS category,
+  similarItem.subCategory AS sub_category,
+  similarItem.priceUsd AS price_usd,
+  similarItem.priceNgn AS price_ngn,
+  coalesce(similarItem.sourceAverageRating, similarItem.avgRating) AS source_average_rating,
+  similarItem.ratingCount AS rating_count,
+  score AS item_similarity,
+  r.id AS review_id,
+  toFloat(r.rating) AS rating,
+  r.text AS text,
+  coalesce(r.verifiedPurchase, false) AS verified_purchase,
+  coalesce(r.helpfulVote, 0) AS helpful_vote,
+  r.locale AS locale,
+  r.platform AS platform,
+  r.wordCount AS word_count,
+  coalesce(r.timestamp, 0) AS timestamp
+ORDER BY
+  item_similarity DESC,
+  verified_purchase DESC,
+  helpful_vote DESC,
+  timestamp DESC
+LIMIT $raw_limit
+"""
+
 QUERY_ITEM_META = """
 MATCH (i:Item {id: $item_id})
 OPTIONAL MATCH (i)-[:IN_CATEGORY]->(cat:Category)
@@ -326,6 +409,193 @@ async def fetch_user_review_on_item(driver, user_id: str, item_id: str) -> dict 
         result = await session.run(QUERY_USER_REVIEW_ON_ITEM, user_id=user_id, item_id=item_id)
         row = await result.single()
         return dict(row) if row else None
+
+
+async def fetch_similar_items_by_embedding(
+    driver,
+    embedding: list[float] | None,
+    *,
+    target_item_id: str = "",
+    category: str = "",
+    top_k: int = 25,
+    limit: int = 10,
+    min_score: float = 0.60,
+    reviews_per_item: int = 5,
+) -> list[dict]:
+    """Fetch semantically similar items and a small review sample for each.
+
+    This is intentionally not wired into Task A yet. It is available for the
+    rating dataset builder and the next inference integration pass.
+    """
+    if not embedding:
+        return []
+    async with driver.session() as session:
+        result = await session.run(
+            QUERY_SIMILAR_ITEMS_BY_EMBEDDING,
+            embedding=embedding,
+            target_item_id=target_item_id or "",
+            category=category or "",
+            top_k=top_k,
+            limit=limit,
+            min_score=min_score,
+        )
+        rows = [dict(row) async for row in result]
+
+    for row in rows:
+        row["reviews"] = [
+            review for review in (row.get("reviews") or [])
+            if review and review.get("review_id")
+        ][:reviews_per_item]
+    return rerank_similar_items(rows, target_category=category)
+
+
+async def fetch_similar_item_reviews_by_embedding(
+    session: AsyncSession,
+    embedding: list[float] | None,
+    *,
+    user_id: str,
+    user_locale: str,
+    target_item_id: str = "",
+    category: str = "",
+    target_price_bucket: str = "",
+    top_k: int = 50,
+    limit: int = 5,
+    min_score: float = 0.72,
+) -> list[dict]:
+    """Fetch reviews under item-vector neighbors and rerank with structured guards."""
+    if not embedding:
+        return []
+    result = await session.run(
+        QUERY_SIMILAR_ITEM_REVIEWS_BY_EMBEDDING,
+        embedding=embedding,
+        user_id=user_id,
+        user_locale=user_locale,
+        target_item_id=target_item_id or "",
+        category=category or "",
+        top_k=top_k,
+        min_score=min_score,
+        raw_limit=max(limit * 8, 24),
+    )
+    rows = [dict(row) async for row in result]
+    for row in rows:
+        row["bucket"] = "item_vector"
+        row["item_name"] = row.get("item_title")
+        row["score"] = _item_vector_review_score(
+            row,
+            target_category=category,
+            target_price_bucket=target_price_bucket,
+            user_locale=user_locale,
+        )
+    rows = sorted(rows, key=lambda row: row.get("score") or 0.0, reverse=True)
+    return _dedupe_review_rows(rows, limit)
+
+
+def rerank_similar_items(rows: list[dict], target_category: str = "") -> list[dict]:
+    ranked: list[dict] = []
+    for row in rows:
+        similarity = float(row.get("item_similarity") or 0.0)
+        category_match = 1.0 if target_category and row.get("category") == target_category else 0.0
+        rating_count = float(row.get("rating_count") or 0.0)
+        rating_count_score = min(rating_count / 100.0, 1.0)
+        avg_rating = row.get("avg_rating")
+        quality_score = 0.5
+        if avg_rating is not None:
+            try:
+                quality_score = max(0.0, min(float(avg_rating) / 5.0, 1.0))
+            except (TypeError, ValueError):
+                quality_score = 0.5
+        row["retrieval_score"] = (
+            0.50 * similarity
+            + 0.20 * category_match
+            + 0.15 * rating_count_score
+            + 0.15 * quality_score
+        )
+        ranked.append(row)
+    return sorted(ranked, key=lambda row: row["retrieval_score"], reverse=True)
+
+
+def _item_vector_review_score(
+    row: dict,
+    *,
+    target_category: str = "",
+    target_price_bucket: str = "",
+    user_locale: str = "",
+) -> float:
+    item_similarity = float(row.get("item_similarity") or 0.0)
+    category_match = 1.0 if target_category and row.get("category") == target_category else 0.0
+    row_price_bucket = price_bucket(row.get("price_usd"), row.get("price_ngn"))
+    price_bucket_match = 1.0 if target_price_bucket and row_price_bucket == target_price_bucket else 0.0
+    locale_match = 1.0 if user_locale and row.get("locale") == user_locale else 0.0
+    verified_purchase = 1.0 if row.get("verified_purchase") else 0.0
+    helpful_vote_score = _helpful_vote_score(row.get("helpful_vote"))
+    return (
+        0.45 * item_similarity
+        + 0.20 * category_match
+        + 0.15 * price_bucket_match
+        + 0.10 * locale_match
+        + 0.05 * verified_purchase
+        + 0.05 * helpful_vote_score
+    )
+
+
+def _helpful_vote_score(value) -> float:
+    try:
+        helpful = float(value or 0.0)
+    except (TypeError, ValueError):
+        helpful = 0.0
+    if helpful <= 0:
+        return 0.0
+    return max(0.0, min(math.log10(1.0 + helpful) / math.log10(50.0), 1.0))
+
+
+def _dedupe_review_rows(rows: list[dict], limit: int) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = row.get("review_id") or (row.get("text") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def summarize_similar_item_reviews(rows: list[dict]) -> dict:
+    ratings: list[float] = []
+    scores: list[float] = []
+    same_category_count = 0
+    first_category = rows[0].get("category") if rows else None
+
+    for row in rows:
+        if row.get("category") and row.get("category") == first_category:
+            same_category_count += 1
+        if row.get("item_similarity") is not None:
+            scores.append(float(row["item_similarity"]))
+        for review in row.get("reviews") or []:
+            if review.get("rating") is not None:
+                ratings.append(float(review["rating"]))
+
+    count = len(ratings)
+    mean = sum(ratings) / count if count else None
+    variance = (
+        sum((rating - mean) ** 2 for rating in ratings) / count
+        if count and mean is not None
+        else 0.0
+    )
+    return {
+        "similar_item_count": len(rows),
+        "similar_item_top_score": max(scores) if scores else 0.0,
+        "similar_item_mean_score": sum(scores) / len(scores) if scores else 0.0,
+        "similar_item_review_count": count,
+        "similar_item_rating_mean": mean,
+        "similar_item_rating_std": variance ** 0.5,
+        "similar_item_low_ratio": len([rating for rating in ratings if rating <= 2.0]) / count if count else 0.0,
+        "similar_item_high_ratio": len([rating for rating in ratings if rating >= 4.0]) / count if count else 0.0,
+        "similar_item_five_star_ratio": len([rating for rating in ratings if rating == 5.0]) / count if count else 0.0,
+        "similar_item_same_category_ratio": same_category_count / len(rows) if rows else 0.0,
+    }
 
 
 async def fetch_item_rating_stats(
@@ -590,6 +860,7 @@ async def fetch_others_reviews(
     item_name: str = "",
     item_brand: str = "",
     item_category: str = "",
+    item_price_bucket: str = "",
     user_tendency: str = "",
     N: int = 5,
 ) -> list[dict]:
@@ -636,7 +907,25 @@ async def fetch_others_reviews(
         if len(rows) >= N or (filtered_generous and rows):
             return rows
 
-    # Tier 2: category-scoped structural query. Exact-item evidence is allowed
+    # Tier 2: item-vector retrieval. This expands from the target product to
+    # semantically similar products, then pulls reviews under those products.
+    if item_vec is not None:
+        vector_rows = await fetch_similar_item_reviews_by_embedding(
+            session,
+            item_vec,
+            user_id=user_id,
+            user_locale=user_locale,
+            target_item_id=item_id,
+            category=item_category,
+            target_price_bucket=item_price_bucket,
+            limit=N,
+        )
+        add_unique(vector_rows)
+        if rows:
+            print(f"item_vector: item_embedding query returned {len(rows)} rows")
+            return rows[:N]
+
+    # Tier 3: category-scoped structural query. Exact-item evidence is allowed
     # to change sentiment; generic category negatives are only fallback context.
     if item_category:
         result = await session.run(
@@ -651,7 +940,7 @@ async def fetch_others_reviews(
             print(f"category: structural query returned {len(rows)} rows")
             return rows
 
-    # Tier 3: LLM-generated Cypher with structured product context
+    # Tier 4: LLM-generated Cypher with structured product context
     if user_query:
         query = await generate_retrieval_query(
             user_query, user_locale,
@@ -670,7 +959,7 @@ async def fetch_others_reviews(
             except Exception:
                 pass
 
-    # Tier 4: Vector search — last resort when category not in graph
+    # Tier 5: Review-vector search — last resort when category not in graph
     if item_vec is not None:
         result2 = await session.run(
             QUERY_VECTOR, item_vec=item_vec, user_locale=user_locale, N=N
@@ -690,6 +979,7 @@ async def fetch_retrieval(
     item_name: str = "",
     item_brand: str = "",
     item_category: str = "",
+    item_price_bucket: str = "",
     user_tendency: str = "",
     K: int = 3,
     N: int = 5,
@@ -703,10 +993,27 @@ async def fetch_retrieval(
             s2, user_id, item_id, user_locale, item_vec,
             user_query=user_query, item_name=item_name,
             item_brand=item_brand, item_category=item_category,
+            item_price_bucket=item_price_bucket,
             user_tendency=user_tendency, N=N,
         )
     graph_data = _build_graph_data(user_id, target_id, own, others)
+    graph_data["branch"] = _infer_retrieval_branch(others, item_id=item_id)
     return own, others, graph_data
+
+
+def _infer_retrieval_branch(rows: list[dict], *, item_id: str = "") -> str:
+    if not rows:
+        return "empty"
+    bucket = rows[0].get("bucket")
+    if bucket == "exact_item":
+        return "exact_item"
+    if bucket == "item_vector":
+        return "item_vector"
+    if item_id and all(row.get("bucket") == "exact_item" for row in rows if row.get("bucket")):
+        return "exact_item"
+    if any(row.get("similarity") is not None for row in rows):
+        return "review_vector"
+    return "category"
 
 
 # ── Graph data builder (for React Flow) ──────────────────────────────────────

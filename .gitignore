@@ -10,5 +10,7 @@ __pycache__/
 .venv/
 agents/.venv/
 evaluation/output/
+dormant/catboost/data/
+dormant/catboost/models/
 
 cred.txt

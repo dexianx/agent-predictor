@@ -75,11 +75,20 @@ INDEX_STATEMENTS = (
     "CREATE INDEX review_id IF NOT EXISTS FOR (r:Review) ON (r.id)",
     "CREATE INDEX review_locale IF NOT EXISTS FOR (r:Review) ON (r.locale)",
     "CREATE INDEX item_category IF NOT EXISTS FOR (i:Item) ON (i.category)",
+    "CREATE INDEX item_sub_category IF NOT EXISTS FOR (i:Item) ON (i.subCategory)",
     "CREATE INDEX item_parent_asin IF NOT EXISTS FOR (i:Item) ON (i.parentAsin)",
     "CREATE INDEX item_store IF NOT EXISTS FOR (i:Item) ON (i.store)",
     f"""
     CREATE VECTOR INDEX review_embedding IF NOT EXISTS
     FOR (r:Review) ON r.embedding
+    OPTIONS {{indexConfig: {{
+      `vector.dimensions`: {EMBED_DIM},
+      `vector.similarity_function`: 'cosine'
+    }}}}
+    """,
+    f"""
+    CREATE VECTOR INDEX item_embedding IF NOT EXISTS
+    FOR (i:Item) ON i.embedding
     OPTIONS {{indexConfig: {{
       `vector.dimensions`: {EMBED_DIM},
       `vector.similarity_function`: 'cosine'

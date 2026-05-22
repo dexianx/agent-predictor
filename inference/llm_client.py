@@ -28,6 +28,7 @@ LLM_RETRY_BASE_SECONDS = float(
 _gemini_client: genai.Client | None = None
 _openai_http: httpx.AsyncClient | None = None
 _openai_http_provider: str | None = None
+_openai_http_loop_id: int | None = None
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -84,11 +85,21 @@ def get_gemini_client() -> genai.Client:
 
 
 def get_openai_compat_client() -> httpx.AsyncClient:
-    global _openai_http, _openai_http_provider
+    global _openai_http, _openai_http_provider, _openai_http_loop_id
     cfg = _openai_compat_config()
-    if _openai_http is None or _openai_http_provider != LLM_PROVIDER:
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = None
+    if (
+        _openai_http is None
+        or _openai_http_provider != LLM_PROVIDER
+        or _openai_http_loop_id != loop_id
+        or _openai_http.is_closed
+    ):
         _openai_http = httpx.AsyncClient(base_url=cfg["base_url"], timeout=120.0)
         _openai_http_provider = LLM_PROVIDER
+        _openai_http_loop_id = loop_id
     return _openai_http
 
 

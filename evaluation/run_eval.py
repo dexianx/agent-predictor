@@ -67,10 +67,11 @@ async def _run_holdout_case(
         print(f"[SKIP] {case.label}: no persona in source {args.persona_source}")
         return None
 
-    result = await _simulate_case(
+    result = await _simulate_case_with_timeout(
         case.label,
         case.to_simulate_request(),
         stop_on_error=args.stop_on_error,
+        timeout_seconds=args.case_timeout_seconds,
     )
     if result is None:
         return None
@@ -107,6 +108,7 @@ async def _run_holdout_case(
         "rubric": rubric.to_dict(),
         "behavior": behavior.__dict__ if behavior else None,
         "evaluation_context": result.get("evaluation_context", {}),
+        "rating_audit": _rating_audit(case, result),
     }
     _print_holdout_report(case, result, rubric, behavior, bundle)
     return report
@@ -208,6 +210,27 @@ async def _simulate_case(label: str, request, *, stop_on_error: bool = False) ->
     return result
 
 
+async def _simulate_case_with_timeout(
+    label: str,
+    request,
+    *,
+    stop_on_error: bool = False,
+    timeout_seconds: float = 0.0,
+) -> dict | None:
+    if timeout_seconds <= 0:
+        return await _simulate_case(label, request, stop_on_error=stop_on_error)
+    try:
+        return await asyncio.wait_for(
+            _simulate_case(label, request, stop_on_error=stop_on_error),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        print(f"[{label}] simulate_review timed out after {timeout_seconds:.0f}s")
+        if stop_on_error:
+            raise
+        return None
+
+
 async def _run_synthetic_case(
     case: UnknownProductCase,
     *,
@@ -216,7 +239,12 @@ async def _run_synthetic_case(
     behavior_evaluator: ReviewGenerationEvaluator | None,
 ) -> dict[str, Any] | None:
     req = case.to_simulate_request()
-    result = await _simulate_case(case.label, req, stop_on_error=args.stop_on_error)
+    result = await _simulate_case_with_timeout(
+        case.label,
+        req,
+        stop_on_error=args.stop_on_error,
+        timeout_seconds=args.case_timeout_seconds,
+    )
     if result is None:
         return None
     persona = load_persona(str(args.sqlite_path), req.user_id, source=args.persona_source)
@@ -254,6 +282,17 @@ def _print_holdout_report(case, result, rubric, behavior, bundle: ReferenceBundl
     print(f"Product : {case.item_title[:90]}")
     print(f"User    : {case.user_id} | Source: {case.source} | Branch: {result['retrieval_branch']}")
     print(f"Rating  : predicted={result['predicted_rating']} heldout={case.rating}")
+    audit = _rating_audit(case, result)
+    print(
+        "Rating audit: "
+        f"true={audit['true_rating']} "
+        f"struct={_fmt(audit['r_struct_float'])}/{audit['r_struct_int']} "
+        f"llm={audit['r_llm']} "
+        f"r_final={_fmt(audit['r_final'])} "
+        f"final={audit['final_rating']} "
+        f"abs_err={_fmt(audit['absolute_error'])} "
+        f"exact_n={audit['exact_item_count']}"
+    )
     pass16 = result.get("evaluation_context", {}).get("pass16", {})
     item_stats = result.get("evaluation_context", {}).get("item_rating_stats", {})
     if pass16 or item_stats:
@@ -313,6 +352,34 @@ def _fmt(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.4f}"
 
 
+def _rating_audit(case: EvalHoldoutCase, result: dict[str, Any]) -> dict[str, Any]:
+    context = result.get("evaluation_context", {}) or {}
+    rating_head = context.get("rating_head", {}) or {}
+    item_stats = context.get("item_rating_stats", {}) or {}
+    final_rating = result.get("predicted_rating")
+    true_rating = case.rating
+    abs_error = None
+    if final_rating is not None and true_rating is not None:
+        abs_error = abs(float(final_rating) - float(true_rating))
+    return {
+        "true_rating": true_rating,
+        "r_struct_float": rating_head.get("r_struct_float"),
+        "r_struct_int": rating_head.get("r_struct_int"),
+        "r_llm": rating_head.get("r_llm"),
+        "r_final": rating_head.get("r_final"),
+        "final_rating": final_rating,
+        "absolute_error": abs_error,
+        "retrieval_branch": result.get("retrieval_branch"),
+        "exact_item_count": int(item_stats.get("count") or 0),
+        "feature_coverage": (rating_head.get("feature_coverage") or {}).get("feature_coverage"),
+        "missing_features_count": (rating_head.get("feature_coverage") or {}).get("missing_features_count"),
+        "defaulted_features_count": (rating_head.get("feature_coverage") or {}).get("defaulted_features_count"),
+        "rating_head_mode": rating_head.get("mode"),
+        "rating_head_enabled": rating_head.get("enabled"),
+        "rating_head_error": rating_head.get("error"),
+    }
+
+
 async def main_async(args: argparse.Namespace) -> int:
     os.environ["PERSONA_SOURCE"] = args.persona_source
     os.environ["EVAL_SPLIT_NAME"] = args.split_name
@@ -365,6 +432,12 @@ async def main_async(args: argparse.Namespace) -> int:
             review_ids=review_ids,
             include_restored=args.include_restored,
         )
+    if args.resume:
+        completed = _load_completed_review_ids(args.output_dir)
+        if completed:
+            before = len(cases)
+            cases = [case for case in cases if case.review_id not in completed]
+            print(f"Resume: skipped {before - len(cases)} completed cases from {args.output_dir}")
     if not cases:
         raise SystemExit(f"No eval holdouts found for split {args.split_name!r}")
 
@@ -408,6 +481,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--include-restored", action="store_true")
     parser.add_argument("--synthetic-fixtures", action="store_true")
     parser.add_argument("--case-delay-seconds", type=float, default=0.0)
+    parser.add_argument("--case-timeout-seconds", type=float, default=0.0)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--stop-on-error", action="store_true")
     parser.add_argument("--neo4j-uri", default=os.getenv("NEO4J_URI", NEO4J_URI))
     parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", NEO4J_USER))
@@ -419,6 +494,21 @@ def _load_review_ids(path: Path | None) -> list[str] | None:
     if path is None:
         return None
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _load_completed_review_ids(output_dir: Path) -> set[str]:
+    cases_path = output_dir / "rubric_cases.jsonl"
+    if not cases_path.exists():
+        return set()
+    completed = set()
+    for line in cases_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            completed.add(json.loads(line)["review_id"])
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return completed
 
 
 def main(argv: list[str] | None = None) -> int:
