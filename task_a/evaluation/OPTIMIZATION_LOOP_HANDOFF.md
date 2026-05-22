@@ -191,7 +191,7 @@ LLM_PROVIDER=cerebras \
 CEREBRAS_MODEL=gpt-oss-120b \
 LLM_MAX_RETRIES=2 \
 LLM_RETRY_BASE_SECONDS=15 \
-.venv/bin/python -m evaluation.run_eval ...
+.venv/bin/python -m task_a.task_a.evaluation.run_eval ...
 ```
 
 Keep `--case-delay-seconds 30` because each case makes two LLM calls.
@@ -227,7 +227,7 @@ LLM_MAX_RETRIES=4 \
 LLM_RETRY_BASE_SECONDS=15 \
 GROQ_MAX_RETRIES=4 \
 GROQ_RETRY_BASE_SECONDS=15 \
-.venv/bin/python -m evaluation.run_eval \
+.venv/bin/python -m task_a.task_a.evaluation.run_eval \
   --sqlite-path personas.db \
   --split-name task_a_v1 \
   --persona-source eval_train \
@@ -467,7 +467,7 @@ LLM_MAX_RETRIES=4 \
 LLM_RETRY_BASE_SECONDS=15 \
 GROQ_MAX_RETRIES=4 \
 GROQ_RETRY_BASE_SECONDS=15 \
-.venv/bin/python -m evaluation.run_eval \
+.venv/bin/python -m task_a.task_a.evaluation.run_eval \
   --sqlite-path personas.db \
   --split-name task_a_v1 \
   --persona-source eval_train \
@@ -488,7 +488,7 @@ LLM_MAX_RETRIES=4 \
 LLM_RETRY_BASE_SECONDS=15 \
 GROQ_MAX_RETRIES=4 \
 GROQ_RETRY_BASE_SECONDS=15 \
-.venv/bin/python -m evaluation.run_eval \
+.venv/bin/python -m task_a.task_a.evaluation.run_eval \
   --sqlite-path personas.db \
   --split-name task_a_v1 \
   --persona-source eval_train \
@@ -524,5 +524,5 @@ PY
 Check no eval is running:
 
 ```bash
-ps aux | rg 'evaluation\.run_eval|python -m evaluation'
+ps aux | rg 'evaluation\.run_eval|python -m task_a.evaluation'
 ```

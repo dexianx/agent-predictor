@@ -1,14 +1,14 @@
 import json
 import sqlite3
 
-from evaluation.build_eval_split import select_holdouts
-from evaluation.eval_store import (
+from task_a.evaluation.build_eval_split import select_holdouts
+from task_a.evaluation.eval_store import (
     connect_sqlite,
     insert_holdouts,
     load_holdout_cases,
     write_eval_personas,
 )
-from inference.persona_loader import load_persona
+from task_a.inference.persona_loader import load_persona
 
 
 def test_eval_holdouts_persist_in_sqlite(tmp_path):

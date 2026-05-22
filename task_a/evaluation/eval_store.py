@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from inference.task_a import SimulateRequest
+from task_a.inference.task_a import SimulateRequest
 from pipeline.config import MIN_REVIEWS_FOR_PERSONA
 from pipeline.user_accumulator import STYLOMETRY_FIELDS, pearson_skew
 

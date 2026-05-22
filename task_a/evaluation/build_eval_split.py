@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
 from pipeline.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
-from evaluation.eval_store import connect_sqlite, insert_holdouts
+from task_a.evaluation.eval_store import connect_sqlite, insert_holdouts
 
 
 CANDIDATE_QUERY = """

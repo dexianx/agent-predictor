@@ -11,13 +11,13 @@ from typing import Any
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from evaluation.amazon_fixtures import UNKNOWN_PRODUCT_CASES, UnknownProductCase
-from evaluation.eval_store import EvalHoldoutCase, connect_sqlite, load_holdout_cases
-from evaluation.review_evaluator import ReviewGenerationEvaluator, warmup_eval_models
-from evaluation.rubric_evaluator import RubricSummary, evaluate_rubric, warmup_rubric_models
-from inference.persona_loader import load_persona
-from inference.retrieval import fetch_item_ground_truth_reviews, fetch_user_review_on_item
-import inference.task_a as task_a
+from task_a.evaluation.amazon_fixtures import UNKNOWN_PRODUCT_CASES, UnknownProductCase
+from task_a.evaluation.eval_store import EvalHoldoutCase, connect_sqlite, load_holdout_cases
+from task_a.evaluation.review_evaluator import ReviewGenerationEvaluator, warmup_eval_models
+from task_a.evaluation.rubric_evaluator import RubricSummary, evaluate_rubric, warmup_rubric_models
+from task_a.inference.persona_loader import load_persona
+from task_a.inference.retrieval import fetch_item_ground_truth_reviews, fetch_user_review_on_item
+import task_a.inference.task_a as task_a
 from pipeline.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 
@@ -335,7 +335,7 @@ def _write_outputs(cases: list[dict[str, Any]], summary: RubricSummary, output_d
     summary_path.write_text(json.dumps(summary.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nWrote {cases_path}")
     print(f"Wrote {summary_path}")
-    print("Human eval checklist: evaluation/HUMAN_EVAL_CHECKLIST.md")
+    print("Human eval checklist: task_a/evaluation/HUMAN_EVAL_CHECKLIST.md")
 
 
 def _flush_outputs(cases: list[dict[str, Any]], summary: RubricSummary, output_dir: Path) -> None:
@@ -354,7 +354,7 @@ def _fmt(value: float | None) -> str:
 
 def _rating_audit(case: EvalHoldoutCase, result: dict[str, Any]) -> dict[str, Any]:
     context = result.get("evaluation_context", {}) or {}
-    rating_head = context.get("rating_head", {}) or {}
+    rating_context = context.get("rating_audit", {}) or {}
     item_stats = context.get("item_rating_stats", {}) or {}
     final_rating = result.get("predicted_rating")
     true_rating = case.rating
@@ -363,20 +363,13 @@ def _rating_audit(case: EvalHoldoutCase, result: dict[str, Any]) -> dict[str, An
         abs_error = abs(float(final_rating) - float(true_rating))
     return {
         "true_rating": true_rating,
-        "r_struct_float": rating_head.get("r_struct_float"),
-        "r_struct_int": rating_head.get("r_struct_int"),
-        "r_llm": rating_head.get("r_llm"),
-        "r_final": rating_head.get("r_final"),
+        "r_llm": rating_context.get("r_llm"),
+        "r_llm_raw": rating_context.get("r_llm_raw"),
+        "r_final": rating_context.get("r_final"),
         "final_rating": final_rating,
         "absolute_error": abs_error,
         "retrieval_branch": result.get("retrieval_branch"),
         "exact_item_count": int(item_stats.get("count") or 0),
-        "feature_coverage": (rating_head.get("feature_coverage") or {}).get("feature_coverage"),
-        "missing_features_count": (rating_head.get("feature_coverage") or {}).get("missing_features_count"),
-        "defaulted_features_count": (rating_head.get("feature_coverage") or {}).get("defaulted_features_count"),
-        "rating_head_mode": rating_head.get("mode"),
-        "rating_head_enabled": rating_head.get("enabled"),
-        "rating_head_error": rating_head.get("error"),
     }
 
 
@@ -474,7 +467,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-cases", type=int, default=200)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--source", choices=("amazon", "nigerian"), default=None)
-    parser.add_argument("--output-dir", type=Path, default=Path("evaluation/output"))
+    parser.add_argument("--output-dir", type=Path, default=Path("task_a/evaluation/output"))
     parser.add_argument("--review-ids-file", type=Path, default=None)
     parser.add_argument("--skip-bertscore", action="store_true")
     parser.add_argument("--skip-supplementary", action="store_true")

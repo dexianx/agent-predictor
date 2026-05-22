@@ -72,7 +72,7 @@ def _get_embedder():
     """Reuses the SentenceTransformer singleton cached by inference.task_a."""
     global _embedder
     if _embedder is None:
-        from inference.task_a import get_embedder
+        from task_a.inference.task_a import get_embedder
         _embedder = get_embedder()
     return _embedder
 

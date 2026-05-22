@@ -280,75 +280,6 @@ async def simulate_review(
     r_llm = _calibrate_rating(r_llm_raw, review_text, signals)
     predicted = r_llm
 
-    rating_head_context = {
-        "enabled": _flag_enabled("USE_RATING_HEAD", "0"),
-        "mode": os.environ.get("RATING_BLEND_MODE", "blended"),
-        "r_struct_float": None,
-        "r_struct_int": None,
-        "r_llm": r_llm,
-        "r_llm_raw": r_llm_raw,
-        "r_final": float(r_llm),
-        "final_rating": int(r_llm),
-        "error": None,
-    }
-    if rating_head_context["enabled"]:
-        try:
-            from .rating_head import build_rating_features, get_rating_head, apply_thresholds
-
-            rating_head = get_rating_head()
-            features = build_rating_features(
-                user_id=request.user_id,
-                item_id=request.item_id or resolved_item_id or "",
-                item_payload=item_meta,
-                persona=persona,
-                exact_item_stats=item_rating_stats,
-                own_reviews=own_reviews,
-                others_reviews=others_reviews,
-                similar_items=[],
-                exclude_review_id=request.heldout_review_id or None,
-                review_text=review_text,
-                signals=signals,
-            )
-            coverage = rating_head.coverage(features)
-            r_struct_float = rating_head.predict_float(features)
-            r_struct_int = apply_thresholds(r_struct_float, rating_head.thresholds)
-            mode = str(rating_head_context["mode"] or "blended").lower()
-            if mode == "catboost_only":
-                r_final = r_struct_float
-                predicted = r_struct_int
-            elif mode in {"llm_only", "current", "pass8"}:
-                r_final = float(r_llm)
-                predicted = int(r_llm)
-            elif mode == "gated":
-                r_final = float(r_llm)
-                predicted = int(r_llm)
-                if coverage["feature_coverage"] >= 0.75 and abs(r_struct_float - float(r_llm)) <= 0.75:
-                    r_final = max(1.0, min(5.0, 0.25 * r_struct_float + 0.75 * float(r_llm)))
-                    predicted = apply_thresholds(r_final, rating_head.thresholds)
-            else:
-                user_category = float(features.get("user_category_mean_excl") or r_struct_float)
-                community = float(features.get("community_rating_mean") or r_struct_float)
-                r_final = (
-                    0.55 * r_struct_float
-                    + 0.35 * float(r_llm)
-                    + 0.05 * user_category
-                    + 0.05 * community
-                )
-                r_final = max(1.0, min(5.0, r_final))
-                predicted = apply_thresholds(r_final, rating_head.thresholds)
-            rating_head_context.update(
-                {
-                    "r_struct_float": r_struct_float,
-                    "r_struct_int": r_struct_int,
-                    "r_final": float(r_final),
-                    "final_rating": int(predicted),
-                    "feature_coverage": coverage,
-                }
-            )
-        except Exception as exc:
-            rating_head_context["error"] = f"{type(exc).__name__}: {exc}"
-            predicted = r_llm
-
     # ── Step 7: ground-truth fetch (post-generation — no LLM contamination) ────
     ground_truth_reviews = await fetch_item_ground_truth_reviews(
         driver, resolved_item_id, limit=5
@@ -373,8 +304,13 @@ async def simulate_review(
             "anchor_reviews":       anchor_reviews,
             "retrieval_branch":     branch,
             "rating_evidence":      rating_evidence,
-            "rating_head":          rating_head_context,
-            "item_rating_stats":     item_rating_stats,
+            "item_rating_stats":    item_rating_stats,
+            "rating_audit": {
+                "r_llm": r_llm,
+                "r_llm_raw": r_llm_raw,
+                "r_final": float(r_llm),
+                "final_rating": int(predicted),
+            },
             "pass16": {
                 "rating_mix_enabled": _flag_enabled("PASS16_RATING_MIX", "0"),
                 "generous_bump_enabled": _flag_enabled("PASS16_GENEROUS_BUMP", "0"),

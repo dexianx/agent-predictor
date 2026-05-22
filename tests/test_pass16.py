@@ -1,8 +1,8 @@
 import pytest
 
-from inference import retrieval
-from inference.prompt_builder import derive_signals
-from inference.task_a import _calibrate_rating, _has_caveat_term
+from task_a.inference import retrieval
+from task_a.inference.prompt_builder import derive_signals
+from task_a.inference.task_a import _calibrate_rating, _has_caveat_term
 
 
 def test_item_stats_flow_into_signals_with_bimodal_flag():

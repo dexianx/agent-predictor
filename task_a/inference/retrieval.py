@@ -744,7 +744,7 @@ related use-case — not necessarily the exact product. This context is used to 
 review the user would write, so diversity across products in the space matters.
 
 Rules:
-- Only MATCH/CALL/RETURN — no CREATE/DELETE/SET/MERGE
+- Only read-only Cypher clauses such as MATCH/CALL/WITH/UNWIND/UNION/RETURN — no CREATE/DELETE/SET/MERGE
 - Match items/reviews primarily by category, then brand, then item name similarity
 - Prefer reviews from locale="{user_locale}", then others
 - Return columns named: text, rating, locale, item_name, category

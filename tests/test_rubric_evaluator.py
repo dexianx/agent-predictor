@@ -1,5 +1,5 @@
-from evaluation import rubric_evaluator
-from evaluation.rubric_evaluator import evaluate_rubric, macro_rmse
+from task_a.evaluation import rubric_evaluator
+from task_a.evaluation.rubric_evaluator import evaluate_rubric, macro_rmse
 
 
 def test_rubric_identical_text_and_rating_without_bertscore():

@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-from evaluation.eval_store import (
+from task_a.evaluation.eval_store import (
     connect_sqlite,
     get_holdout_review_ids,
     load_neo4j_rows,

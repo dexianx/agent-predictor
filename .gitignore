@@ -9,8 +9,6 @@ __pycache__/
 .mypy_cache/
 .venv/
 agents/.venv/
-evaluation/output/
-dormant/catboost/data/
-dormant/catboost/models/
+task_a/evaluation/output/
 
 cred.txt

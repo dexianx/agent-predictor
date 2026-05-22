@@ -8,12 +8,12 @@ load_dotenv()
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from inference.persona_loader import (
+from task_a.inference.persona_loader import (
     load_persona,
     load_featured_personas,
     search_personas,
 )
-from inference.task_a import SimulateRequest, simulate_review
+from task_a.inference.task_a import SimulateRequest, simulate_review
 from api.models import PersonaDetail, CategoryBias, SimulateResponse
 
 import sqlite3

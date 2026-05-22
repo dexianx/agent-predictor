@@ -20,7 +20,7 @@ class UnknownProductCase:
     proxy_item_title: str
 
     def to_simulate_request(self, user_id: str = EVAL_USER_ID):
-        from inference.task_a import SimulateRequest
+        from task_a.inference.task_a import SimulateRequest
 
         return SimulateRequest(
             user_id=user_id,

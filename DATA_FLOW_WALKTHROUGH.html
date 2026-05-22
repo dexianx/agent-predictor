@@ -1,0 +1,1567 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kora Data Flow Walkthrough</title>
+  <style>
+    :root {
+      --paper: #fbf8ef;
+      --panel: #fffdf8;
+      --ink: #201c18;
+      --muted: #746b61;
+      --line: #ded6c8;
+      --line-strong: #b9aa96;
+      --terra: #c86f4d;
+      --cocoa: #5a3d2e;
+      --sage: #789274;
+      --blue: #547f9f;
+      --sand: #e9d2a4;
+      --rose: #e9b6a4;
+      --green: #cfe1c7;
+      --code: #f3eadc;
+      --shadow: 0 16px 40px -32px rgba(63, 42, 28, 0.45);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 34px 0 72px;
+    }
+
+    header {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #fffdf9 0%, #f9f2e6 100%);
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: var(--shadow);
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+
+    h1 {
+      font-size: clamp(30px, 5vw, 58px);
+      max-width: 920px;
+    }
+
+    h2 {
+      font-size: clamp(24px, 3vw, 36px);
+      padding-top: 6px;
+    }
+
+    h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    p { margin: 10px 0 0; }
+    a { color: var(--terra); text-decoration-thickness: 1px; }
+
+    .subtitle {
+      max-width: 860px;
+      color: var(--muted);
+      font-size: 17px;
+      margin-top: 16px;
+    }
+
+    .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      background: #fffaf1;
+      border-radius: 999px;
+      padding: 5px 10px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    nav {
+      margin: 18px 0 24px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 8px;
+    }
+
+    nav a {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    section {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: #fffaf2;
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .flow-step {
+      min-height: 112px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff9ee;
+      position: relative;
+    }
+
+    .flow-step::after {
+      content: "->";
+      position: absolute;
+      right: -15px;
+      top: 42%;
+      color: var(--line-strong);
+      font-weight: 700;
+    }
+
+    .flow-step:nth-child(4n)::after,
+    .flow-step:last-child::after {
+      content: "";
+    }
+
+    .flow-step .num {
+      display: inline-flex;
+      width: 24px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background: var(--cocoa);
+      color: white;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .lane {
+      display: grid;
+      grid-template-columns: 190px 1fr;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+
+    .lane-label {
+      background: #f2e5d1;
+      padding: 14px;
+      font-weight: 700;
+      border-right: 1px solid var(--line);
+    }
+
+    .lane-body {
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .mini-flow {
+      display: flex;
+      align-items: stretch;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .box {
+      border: 1px solid var(--line);
+      background: #fffaf3;
+      border-radius: 8px;
+      padding: 9px 10px;
+      min-width: 125px;
+      flex: 1;
+      font-size: 13px;
+    }
+
+    .tag {
+      display: inline-flex;
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-right: 4px;
+      background: var(--sand);
+      color: #33291d;
+    }
+
+    .tag.neo { background: #cbe2d0; }
+    .tag.sql { background: #d8d2f0; }
+    .tag.llm { background: #f0c7b9; }
+    .tag.ui { background: #cfe2ea; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 13px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      padding: 10px;
+    }
+
+    th {
+      background: #f0e3cf;
+      color: #3a2a20;
+    }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+    }
+
+    code {
+      background: var(--code);
+      border: 1px solid #e1d5c4;
+      border-radius: 5px;
+      padding: 1px 4px;
+    }
+
+    pre {
+      background: #2b241e;
+      color: #fff8e8;
+      border-radius: 8px;
+      padding: 14px;
+      overflow: auto;
+      line-height: 1.45;
+      margin: 12px 0 0;
+    }
+
+    ul, ol { padding-left: 20px; }
+    li { margin: 5px 0; }
+
+    .callout {
+      border-left: 4px solid var(--terra);
+      background: #fff4eb;
+      border-radius: 8px;
+      padding: 13px 14px;
+      margin-top: 14px;
+    }
+
+    .good { border-left-color: var(--sage); background: #f1f8ed; }
+    .warn { border-left-color: #b88425; background: #fff7e4; }
+    .danger { border-left-color: #a84f3e; background: #fff0ed; }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .legend span {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 5px 8px;
+      background: #fffaf4;
+      font-size: 12px;
+    }
+
+    .matrix td:first-child {
+      font-weight: 700;
+      width: 180px;
+    }
+
+    .footer-note {
+      color: var(--muted);
+      text-align: center;
+      margin-top: 26px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 850px) {
+      main { width: min(100vw - 24px, 1180px); padding-top: 18px; }
+      header, section { padding: 18px; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-step::after { content: ""; }
+      .lane { grid-template-columns: 1fr; }
+      .lane-label { border-right: 0; border-bottom: 1px solid var(--line); }
+      .two-col { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Kora Task A Data Flow Walkthrough</h1>
+    <p class="subtitle">
+      A detailed teammate handoff for how review data enters the system, how it becomes a Neo4j knowledge graph and SQLite persona store, how inference uses both stores, and where optimization passes can safely plug in.
+    </p>
+    <div class="meta">
+      <span class="pill">Repo: /Users/fadex/Downloads/coding-apps/data-scraping</span>
+      <span class="pill">Task: User modeling review + rating simulation</span>
+      <span class="pill">Primary metric: held-out rating RMSE</span>
+      <span class="pill">Secondary: ROUGE-L / BERTScore / behavioral proxies</span>
+    </div>
+  </header>
+
+  <nav>
+    <a href="#one-screen">One Screen Summary</a>
+    <a href="#files">Code Map</a>
+    <a href="#ingestion">Ingestion</a>
+    <a href="#stores">Storage</a>
+    <a href="#api">API And UI</a>
+    <a href="#inference">Inference Flow</a>
+    <a href="#retrieval">Retrieval Details</a>
+    <a href="#prompts">Prompt And LLM</a>
+    <a href="#eval">Evaluation Flow</a>
+    <a href="#scoring">Scoring Calculations</a>
+    <a href="#optimization">Optimization Levers</a>
+  </nav>
+
+  <section id="one-screen">
+    <h2>One Screen Summary</h2>
+    <p>
+      The stack is built around two persistent stores: Neo4j holds the review graph plus review and item embeddings; SQLite holds compact user personas and train-only eval personas. At runtime, the API takes a user and product, retrieves that user's style history plus exact-item or item-vector community evidence from the graph, builds two prompts, streams a review from an LLM, asks a second LLM call for a numeric rating, then applies deterministic calibration rules before returning the final simulated review.
+    </p>
+
+    <div class="flow">
+      <div class="flow-step">
+        <span class="num">1</span>
+        <h3>Source Data</h3>
+        <p class="small">Amazon Reviews 2023, local Nigerian ecommerce JSONL, Nigerian Google Maps CSV.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">2</span>
+        <h3>Normalize</h3>
+        <p class="small">Every row becomes a <code>ReviewRecord</code> with user, item, rating, review text, metadata, price, locale, and platform.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">3</span>
+        <h3>Enrich</h3>
+        <p class="small">Compute stylometry and review embeddings using <code>all-MiniLM-L6-v2</code> by default.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">4</span>
+        <h3>Persist</h3>
+        <p class="small">Write graph nodes/edges to Neo4j and user personas/category bias to SQLite.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">5</span>
+        <h3>Infer</h3>
+        <p class="small">Load persona, resolve item, retrieve style/content anchors, build prompts, call LLM twice.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">6</span>
+        <h3>Calibrate</h3>
+        <p class="small">Deterministic rating rules adjust obvious under/over predictions using persona and retrieved risk signals.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">7</span>
+        <h3>Evaluate</h3>
+        <p class="small">Hidden reviews are removed from Neo4j, stored in SQLite, generated against, and scored as held-out truth.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">8</span>
+        <h3>Visualize</h3>
+        <p class="small">The API emits graph_data over WebSocket; the UI renders Graph/Table/RAW tabs using Neo4j NVL.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="files">
+    <h2>Code Map</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Main Files</th>
+          <th>What They Own</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Data ingestion</td>
+          <td><code>pipeline/run_pipeline.py</code>, <code>pipeline/sources.py</code>, <code>pipeline/models.py</code></td>
+          <td>CLI args, source streaming, source-specific normalization, final <code>ReviewRecord</code> schema.</td>
+        </tr>
+        <tr>
+          <td>Sampling and enrichment</td>
+          <td><code>pipeline/sampler.py</code>, <code>pipeline/enrichment.py</code></td>
+          <td>Deterministic persona-friendly sampling, stylometry extraction, review embedding generation.</td>
+        </tr>
+        <tr>
+          <td>Persistence</td>
+          <td><code>pipeline/neo4j_writer.py</code>, <code>pipeline/user_accumulator.py</code></td>
+          <td>Neo4j schema writes/indexes; SQLite <code>personas</code> and <code>category_rating_bias</code>.</td>
+        </tr>
+        <tr>
+          <td>Inference orchestration</td>
+          <td><code>task_a/inference/task_a.py</code></td>
+          <td>End-to-end review simulation workflow and WebSocket event emission.</td>
+        </tr>
+        <tr>
+          <td>Retrieval</td>
+          <td><code>task_a/inference/retrieval.py</code></td>
+          <td>Neo4j Cypher queries, review vector search, exact-item/category/LLM-Cypher retrieval, graph_data builder.</td>
+        </tr>
+        <tr>
+          <td>Prompting</td>
+          <td><code>task_a/inference/prompt_builder.py</code></td>
+          <td>Signal derivation, Nigerian voice overlay, review prompt, rating prompt.</td>
+        </tr>
+        <tr>
+          <td>LLM providers</td>
+          <td><code>task_a/inference/llm_client.py</code></td>
+          <td>Gemini, Groq, Cerebras, streaming review generation, structured JSON rating/Cypher calls, retries.</td>
+        </tr>
+        <tr>
+          <td>API</td>
+          <td><code>api/main.py</code>, <code>api/models.py</code></td>
+          <td>FastAPI REST/WebSocket endpoints and response schemas.</td>
+        </tr>
+        <tr>
+          <td>Evaluation</td>
+          <td><code>task_a/evaluation/*.py</code></td>
+          <td>Persistent holdouts, train-only personas, held-out deletion/restore, rubric scoring, reports.</td>
+        </tr>
+        <tr>
+          <td>UI graph viewer</td>
+          <td><code>ui/src/components/chat/KnowledgeGraph.tsx</code>, <code>GraphCanvas.tsx</code></td>
+          <td>Embedded graph/table/raw panel rendered from API <code>graph_data</code> events.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="ingestion">
+    <h2>Data Ingestion</h2>
+    <p>
+      The ingestion CLI is rerunnable and parameterized. It builds a mixed sample from Amazon, Nigerian ecommerce, and Nigerian Google Maps. Larger runs use the same path; only row counts and source limits change.
+    </p>
+
+    <pre>python -m pipeline.run_pipeline \
+  --sample-size 5000 \
+  --categories Home_and_Kitchen,Electronics,Cell_Phones_and_Accessories \
+  --reset-neo4j \
+  --sqlite-path personas.db</pre>
+
+    <div class="lane">
+      <div class="lane-label">Amazon source</div>
+      <div class="lane-body">
+        <div class="mini-flow">
+          <div class="box">Stream metadata from <code>meta_categories/meta_{category}.jsonl.gz</code></div>
+          <div class="box">Build metadata pool keyed by <code>parent_asin</code></div>
+          <div class="box">Stream reviews from <code>review_categories/{category}.jsonl.gz</code></div>
+          <div class="box">Keep reviews whose <code>parent_asin</code> has rich metadata</div>
+        </div>
+        <p class="small muted">
+          Important fields: <code>rating</code>, <code>text</code>, <code>title</code>, <code>timestamp</code>, <code>verified_purchase</code>, <code>helpful_vote</code>, review images, title, brand/store, price USD, features, description, category breadcrumbs, and bought-together IDs.
+        </p>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-label">Nigerian ecommerce</div>
+      <div class="lane-body">
+        <div class="mini-flow">
+          <div class="box">Read local combined review JSONL from <code>output/combined/review_categories</code></div>
+          <div class="box">Join product metadata from combined meta files</div>
+          <div class="box">Emit locale <code>NG</code> and platform such as <code>jumia_ng</code> or <code>konga_ng</code></div>
+        </div>
+        <p class="small muted">
+          This data is mostly used to make the solution paper and behavior layer Nigerian-aware: price sensitivity, authenticity concern, local tone, and Nigerian ecommerce context.
+        </p>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-label">Google Maps NG</div>
+      <div class="lane-body">
+        <div class="mini-flow">
+          <div class="box">Read <code>optimized_scraper/nigeria_reviews.csv</code> with BOM-safe UTF-8</div>
+          <div class="box">Join places from <code>nigeria_places.csv</code></div>
+          <div class="box">Extract stable reviewer IDs from reviewer URLs</div>
+        </div>
+        <p class="small muted">
+          Google places are stored as <code>Item</code> nodes too, so restaurants, supermarkets, and malls become reviewable targets in the same graph model as products.
+        </p>
+      </div>
+    </div>
+
+    <h3>Normalization Contract</h3>
+    <p>All sources become the same dataclass: <code>pipeline.models.ReviewRecord</code>.</p>
+    <table class="matrix">
+      <tbody>
+        <tr><td>Identity</td><td><code>review_id</code>, <code>user_id</code>, <code>item_id</code></td></tr>
+        <tr><td>Behavior label</td><td><code>rating</code>, <code>text</code>, <code>title</code>, <code>timestamp</code></td></tr>
+        <tr><td>Locale/platform</td><td><code>locale</code> is typically <code>US</code> or <code>NG</code>; <code>platform</code> is <code>amazon_us</code>, <code>jumia_ng</code>, <code>google_maps_ng</code>, etc.</td></tr>
+        <tr><td>Product metadata</td><td><code>item_title</code>, <code>item_brand</code>, <code>category</code>, <code>sub_category</code>, prices, source average rating, rating count, images, details, features, description.</td></tr>
+        <tr><td>Amazon-specific</td><td><code>parent_asin</code>, <code>child_asin</code>, <code>bought_together</code>, <code>verified_purchase</code>, <code>helpful_vote</code>.</td></tr>
+        <tr><td>Derived later</td><td><code>word_count</code>, <code>embedding</code>, <code>stylometry</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Sampling</h3>
+    <p>
+      <code>persona_friendly_sample()</code> filters out rows missing user/item/review IDs, prioritizes users with at least three reviews, round-robins by category, then sorts deterministically by locale/platform/category/user/review. This matters because Task A needs repeated user histories, not just isolated one-off reviews.
+    </p>
+  </section>
+
+  <section id="stores">
+    <h2>Enrichment And Storage</h2>
+    <div class="two-col">
+      <div class="card">
+        <h3>Review Enrichment</h3>
+        <ul>
+          <li><code>word_count</code> is computed from review text.</li>
+          <li>Stylometry is computed only when review length is above the minimum word threshold.</li>
+          <li>Review embeddings use <code>sentence-transformers/all-MiniLM-L6-v2</code> by default, 384 dimensions.</li>
+          <li>Tests can use <code>HashingEmbedder</code> for deterministic fake embeddings.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Stylometry Features</h3>
+        <ul>
+          <li>Sentence length, vocabulary richness, average word length.</li>
+          <li>Exclamation, question, uppercase, emoji rates.</li>
+          <li>Pidgin token frequency.</li>
+          <li>Naira mention, price sensitivity, authenticity concern.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Neo4j Graph Write</h3>
+    <p>
+      <code>Neo4jWriter.write_reviews()</code> sends batches into a Cypher <code>UNWIND</code>. It merges stable nodes and relationships instead of blindly creating duplicates.
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>Graph element</th><th>Properties / purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag neo">Node</span> <code>User</code></td>
+          <td><code>id</code>, <code>locale</code>, <code>platform</code>. Represents the shopper/persona.</td>
+        </tr>
+        <tr>
+          <td><span class="tag neo">Node</span> <code>Item</code></td>
+          <td>Title, brand, category, subCategory, prices, source rating stats, ASINs, features, description, images, details JSON, boughtTogether list.</td>
+        </tr>
+        <tr>
+          <td><span class="tag neo">Node</span> <code>Review</code></td>
+          <td>Rating, text, title, timestamp, locale, platform, wordCount, embedding, stylometry JSON, verifiedPurchase, helpfulVote, images.</td>
+        </tr>
+        <tr>
+          <td><span class="tag neo">Node</span> <code>Category</code>, <code>Platform</code></td>
+          <td>Taxonomy and source grouping nodes.</td>
+        </tr>
+        <tr>
+          <td><span class="tag neo">Edge</span> <code>WROTE</code></td>
+          <td><code>(User)-[:WROTE {timestamp}]->(Review)</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag neo">Edge</span> <code>ABOUT</code></td>
+          <td><code>(Review)-[:ABOUT]->(Item)</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag neo">Edge</span> <code>IN_CATEGORY</code>, <code>SOLD_ON</code>, <code>BOUGHT_TOGETHER</code></td>
+          <td>Category, platform, and product adjacency structure.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Neo4j Indexes</h3>
+    <p>
+      The writer creates standard indexes for user/item/review IDs, review locale, item category, parent ASIN, store, plus vector indexes named <code>review_embedding</code> on <code>Review.embedding</code> and <code>item_embedding</code> on <code>Item.embedding</code>, both using cosine similarity.
+    </p>
+
+    <div class="callout good">
+      <strong>Current embedding scope:</strong>
+      Reviews keep their existing embeddings, and products now also have <code>Item.embedding</code>. Item embeddings are generated from title, brand/store, category/sub-category, price bucket, features, description/details, source average rating, and rating count. This enables similar-product review retrieval before falling back to broad category evidence.
+    </div>
+
+    <h3>SQLite Persona Store</h3>
+    <p>
+      <code>UserAccumulator.flush_sqlite()</code> aggregates all sampled reviews by user and writes compact persona rows.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Table</th><th>Meaning</th><th>Key columns</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag sql">SQLite</span> <code>personas</code></td>
+          <td>Production/inference persona summary. This table remains full-history unless explicitly rebuilt by the ingestion pipeline.</td>
+          <td><code>review_count</code>, <code>rating_mean</code>, <code>rating_std</code>, <code>rating_skew</code>, <code>top_categories</code>, stylometry averages, eligibility flags.</td>
+        </tr>
+        <tr>
+          <td><span class="tag sql">SQLite</span> <code>category_rating_bias</code></td>
+          <td>Per-user average rating inside each category.</td>
+          <td><code>user_id</code>, <code>category</code>, <code>mean</code>, <code>count</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="tag sql">SQLite</span> <code>eval_holdout_reviews</code></td>
+          <td>Persistent deleted reviews used as ground truth for eval.</td>
+          <td>Full hidden review payload, item metadata, restore status, split name, seed, source.</td>
+        </tr>
+        <tr>
+          <td><span class="tag sql">SQLite</span> <code>eval_personas_train</code></td>
+          <td>Train-only persona stats for eval users, excluding hidden reviews.</td>
+          <td>Same persona-style columns as production, keyed by split.</td>
+        </tr>
+        <tr>
+          <td><span class="tag sql">SQLite</span> <code>eval_category_rating_bias_train</code></td>
+          <td>Train-only category bias for eval users.</td>
+          <td><code>split_name</code>, <code>user_id</code>, <code>category</code>, <code>mean</code>, <code>count</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="api">
+    <h2>API And UI Flow</h2>
+    <p>
+      The API exposes persona browsing endpoints and two generation paths: WebSocket for the UI and REST as a fallback.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Persona APIs</h3>
+        <ul>
+          <li><code>GET /health</code></li>
+          <li><code>GET /personas/featured</code></li>
+          <li><code>GET /personas</code></li>
+          <li><code>GET /personas/{user_id}</code></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Simulation APIs</h3>
+        <ul>
+          <li><code>POST /simulate</code> collects events and returns final JSON.</li>
+          <li><code>WS /ws/simulate</code> streams step, graph, token, final, or error events.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Frontend</h3>
+        <ul>
+          <li><code>connectSimulate()</code> opens the WebSocket and yields events.</li>
+          <li><code>MessageView</code> renders steps, streamed text, final review, and graph panel.</li>
+          <li><code>KnowledgeGraph</code> renders Graph/Table/RAW tabs from <code>graph_data</code>.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Request Shape</h3>
+    <pre>{
+  "user_id": "AFKZENTNBQ7A7V7UX...",
+  "item_name": "Target product title",
+  "price_ngn": 0,
+  "price_usd": 19.99,
+  "item_id": "B09XWYG6X1",
+  "item_description": "Optional product text",
+  "raw_message": "Optional natural-language prompt",
+  "item_category": "Home_and_Kitchen",
+  "item_brand": "Optional brand",
+  "heldout_review_id": "eval-only, not sent by production UI"
+}</pre>
+
+    <h3>Streamed Event Sequence</h3>
+    <table>
+      <thead>
+        <tr><th>Event</th><th>When it happens</th><th>UI effect</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>step: persona_load</code></td><td>SQLite persona lookup begins.</td><td>Agent step appears.</td></tr>
+        <tr><td><code>step: item_resolve</code></td><td>Neo4j item metadata lookup/title fallback begins.</td><td>Agent step updates.</td></tr>
+        <tr><td><code>step: retrieval</code></td><td>Graph retrieval begins.</td><td>Agent step shows retrieval branch.</td></tr>
+        <tr><td><code>graph_data</code></td><td>Retrieved own/community anchors are converted to nodes and edges.</td><td>Knowledge graph panel appears with Graph/Table/RAW tabs.</td></tr>
+        <tr><td><code>step: prompt_build</code></td><td>Signals and prompts are assembled.</td><td>Agent step updates.</td></tr>
+        <tr><td><code>step: llm_review</code></td><td>Call 1 starts.</td><td>Assistant text streams token by token.</td></tr>
+        <tr><td><code>token</code></td><td>Each streaming chunk from the LLM.</td><td>Review text appears progressively.</td></tr>
+        <tr><td><code>step: llm_rating</code></td><td>Call 2 starts for JSON rating.</td><td>Agent step updates.</td></tr>
+        <tr><td><code>final</code></td><td>Calibration and ground-truth fetch finish.</td><td>Final card shows review and star rating.</td></tr>
+        <tr><td><code>error</code></td><td>Any backend exception.</td><td>Error notice appears.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="inference">
+    <h2>Inference Flow In Fine Detail</h2>
+    <p>
+      The central function is <code>inference.task_a.simulate_review()</code>. This is the production path, the WebSocket path, and the eval path.
+    </p>
+
+    <ol>
+      <li>
+        <strong>Receive <code>SimulateRequest</code>.</strong>
+        Required fields are <code>user_id</code>, <code>item_name</code>, and <code>price_ngn</code>. Optional fields include exact <code>item_id</code>, product description, brand/category hints, USD price, raw message, and eval-only <code>heldout_review_id</code>.
+      </li>
+      <li>
+        <strong>Build retrieval query text.</strong>
+        <code>_retrieval_query()</code> concatenates <code>raw_message</code>, <code>item_name</code>, and <code>item_description</code>. This is used for LLM-Cypher retrieval, not directly as the final prompt.
+      </li>
+      <li>
+        <strong>Load persona.</strong>
+        <code>load_persona()</code> reads either production <code>personas</code> or eval <code>eval_personas_train</code>, controlled by <code>PERSONA_SOURCE</code>. It also loads category bias rows into <code>persona["cat_bias"]</code>.
+      </li>
+      <li>
+        <strong>Resolve item metadata.</strong>
+        If <code>item_id</code> is provided, <code>resolve_item()</code> fetches the Neo4j <code>Item</code>. If not, <code>resolve_item_by_title()</code> tries title search. If neither works, request metadata becomes the fallback item record.
+      </li>
+      <li>
+        <strong>Derive early user tendency.</strong>
+        Before retrieval, the code classifies the user from <code>rating_mean</code>: generous if >= 4.3, balanced if >= 3.8, otherwise tough critic. This influences exact-item review filtering.
+      </li>
+      <li>
+        <strong>Select retrieval branch label.</strong>
+        Branch is <code>category</code> if category is known, <code>query</code> if query text exists, otherwise <code>vector</code>. The label is diagnostic; the retrieval function still has ordered tiers.
+      </li>
+      <li>
+        <strong>Embed retrieval text.</strong>
+        The system embeds <code>item_name + category</code> for review-vector fallback. It intentionally avoids embedding full spec text because product specs and review prose are semantically different.
+      </li>
+      <li>
+        <strong>Fetch retrieval evidence.</strong>
+        <code>fetch_retrieval()</code> returns <code>own_reviews</code>, <code>others_reviews</code>, and <code>graph_data</code>. Own reviews are style anchors. Others are content/item/community anchors.
+      </li>
+      <li>
+        <strong>Fetch exact-item rating stats.</strong>
+        <code>fetch_item_rating_stats()</code> aggregates all remaining reviews for the exact item. In eval, <code>heldout_review_id</code> is excluded so the hidden review is not leaked.
+      </li>
+      <li>
+        <strong>Patch item metadata.</strong>
+        Retrieved evidence may backfill item title/category/rating count, but request-provided title, price, description, and hints are applied last so user/eval inputs stay authoritative.
+      </li>
+      <li>
+        <strong>Emit graph_data.</strong>
+        Retrieved anchors are converted into lightweight graph nodes and edges for UI visualization before the LLM starts generating.
+      </li>
+      <li>
+        <strong>Derive prompt signals.</strong>
+        <code>derive_signals()</code> combines persona, own reviews, community reviews, and item metadata into a compact signal dictionary.
+      </li>
+      <li>
+        <strong>Build prompts.</strong>
+        The system prompt defines persona voice. The user prompt contains own-review style examples, community evidence, item metadata, category bias, and warnings. The rating prompt is built later after review text exists.
+      </li>
+      <li>
+        <strong>LLM call 1 streams review text.</strong>
+        <code>call_review_stream()</code> streams tokens from Gemini, Groq, or Cerebras.
+      </li>
+      <li>
+        <strong>LLM call 2 predicts rating.</strong>
+        <code>call_calibrated_rating()</code> asks the provider for JSON with <code>rating</code>, <code>confidence</code>, <code>evidence_used</code>, and <code>calibration_reason</code>.
+      </li>
+      <li>
+        <strong>Deterministic rating calibration.</strong>
+        <code>_calibrate_rating()</code> caps severe failures, bumps clean generous-user positives, blocks caveat-heavy positives, and adjusts using retrieved negative/neutral/community evidence.
+      </li>
+      <li>
+        <strong>Fetch ground-truth references after generation.</strong>
+        The code fetches exact item reviews only after generation so labels do not contaminate the prompt. Eval scoring uses the hidden SQLite holdout, not this late evidence.
+      </li>
+      <li>
+        <strong>Emit final result.</strong>
+        Final payload includes review text, predicted rating, locale, branch, anchor reviews, ground-truth references, rating evidence, item stats, and Pass 16 attribution flags.
+      </li>
+    </ol>
+  </section>
+
+  <section id="retrieval">
+    <h2>Retrieval Details</h2>
+    <p>
+      Retrieval is not one query. It is a layered decision tree that tries to balance user style, item evidence, community evidence, and fallbacks.
+    </p>
+
+    <h3>Own Reviews: Style Anchors</h3>
+    <table>
+      <thead>
+        <tr><th>Condition</th><th>Query path</th><th>Why it matters</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>No exact item, category known</td>
+          <td><code>QUERY_A_SAME_CAT_BY_NAME</code></td>
+          <td>Gets this user's reviews in the same product space.</td>
+        </tr>
+        <tr>
+          <td>No category match</td>
+          <td><code>QUERY_OWN_RECENT</code></td>
+          <td>Falls back to recent user voice/cadence.</td>
+        </tr>
+        <tr>
+          <td>Exact item known</td>
+          <td><code>QUERY_A_SAME_CAT</code>, then <code>QUERY_A_ANY_CAT</code></td>
+          <td>Finds same-category user history, then broader user history.</td>
+        </tr>
+        <tr>
+          <td>Any path</td>
+          <td><code>QUERY_OWN_LOW_NEUTRAL</code> supplement</td>
+          <td>Adds examples of how this user writes when they are less satisfied.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Others Reviews: Content Anchors</h3>
+    <div class="lane">
+      <div class="lane-label">Tier 1</div>
+      <div class="lane-body">
+        <strong>Exact-item reviews</strong>
+        <p class="small">
+          If <code>item_id</code> is known, the system fetches other users' reviews on that exact item. With <code>PASS16_RATING_MIX=1</code>, it slot-fills by rating buckets: one positive, one low, one neutral, then legacy fill. Verified purchase and helpful vote are tie-breakers inside each bucket.
+        </p>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-label">Tier 2</div>
+      <div class="lane-body">
+        <strong>Item-vector similar product reviews</strong>
+        <p class="small">
+          The request/product metadata is converted to canonical item text, embedded with the configured sentence-transformer, and queried against <code>db.index.vector.queryNodes('item_embedding', ...)</code>. Similar product reviews are filtered by category when available and reranked by item similarity, category match, price bucket match, locale, verified purchase, and helpful vote.
+        </p>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-label">Tier 3</div>
+      <div class="lane-body">
+        <strong>Category structural query</strong>
+        <p class="small">
+          If category is known, <code>QUERY_CATEGORY_REVIEWS</code> pulls reviews from items whose category matches the target category, preferring same-locale reviews and recent reviews.
+        </p>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-label">Tier 4</div>
+      <div class="lane-body">
+        <strong>LLM-generated Cypher</strong>
+        <p class="small">
+          If query text exists and structural retrieval is insufficient, the system asks the LLM to write a read-only Cypher query. The prompt includes schema rules, rating-mix requirements, category/brand scope, anti single-user dominance, and multi-item spread.
+        </p>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-label">Tier 5</div>
+      <div class="lane-body">
+        <strong>Review vector search</strong>
+        <p class="small">
+          Last resort uses <code>db.index.vector.queryNodes('review_embedding', 15, item_vec)</code>, filters by similarity > 0.72 and locale, then returns review anchors.
+        </p>
+      </div>
+    </div>
+
+    <h3>Exact Item Rating Stats</h3>
+    <p>
+      <code>QUERY_ITEM_RATING_STATS</code> computes the full rating distribution over all non-held-out reviews for the target item. The hidden review is excluded by ID during eval.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Signal</th><th>Meaning</th><th>Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>exact_item_count</code></td><td>Number of remaining reviews for this item.</td><td>Rating prompt, Pass 16 gates.</td></tr>
+        <tr><td><code>exact_item_mean</code></td><td>Mean rating across remaining same-item reviews.</td><td>Rating prompt.</td></tr>
+        <tr><td><code>exact_item_std</code></td><td>Rating spread.</td><td>Rating prompt.</td></tr>
+        <tr><td><code>item_low_ratio</code></td><td>Fraction of reviews <= 2 stars.</td><td>Generous bump block; risk awareness.</td></tr>
+        <tr><td><code>item_high_ratio</code></td><td>Fraction of reviews >= 4 stars.</td><td>Generous bump allow condition.</td></tr>
+        <tr><td><code>item_bimodal</code></td><td>At least two 1-star and two 5-star reviews with polarizing distribution.</td><td>Rating prompt warning.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout good">
+      <strong>Why the KG still matters:</strong>
+      The graph gives exact user behavior, exact item evidence, category structure, locale/platform context, verified/helpful metadata, and user-item-review paths. A plain vector DB would be simpler, but it would flatten these relationships unless you rebuild them as filters and rerankers.
+    </div>
+  </section>
+
+  <section id="prompts">
+    <h2>Signal, Prompt, LLM, Calibration</h2>
+
+    <h3>Derived Signals</h3>
+    <table>
+      <thead>
+        <tr><th>Signal group</th><th>Examples</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Persona rating behavior</td>
+          <td><code>rating_mean</code>, <code>rating_std</code>, <code>rating_skew</code>, <code>review_count</code>, <code>consistency_label</code></td>
+          <td>Predict whether the user is generous, balanced, or critical.</td>
+        </tr>
+        <tr>
+          <td>Category behavior</td>
+          <td><code>category_mean</code>, <code>category_count</code></td>
+          <td>Capture item-category-specific bias for the same user.</td>
+        </tr>
+        <tr>
+          <td>Community evidence</td>
+          <td><code>others_mean</code>, <code>others_dist_str</code>, negative/neutral/positive counts</td>
+          <td>Expose what other users say about the product or category.</td>
+        </tr>
+        <tr>
+          <td>Exact-item risks</td>
+          <td>Aspect risks such as quality, functionality, usability, battery, value.</td>
+          <td>Prevent the LLM from ignoring real product complaints.</td>
+        </tr>
+        <tr>
+          <td>Style and locale</td>
+          <td>Average own-review length, vocabulary label, emotion label, pidgin label, price sensitivity.</td>
+          <td>Make review text sound like the user and locale.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Prompt Blocks</h3>
+    <div class="grid">
+      <div class="card">
+        <h3>System Prompt</h3>
+        <p class="small">Defines the role: write one authentic product review as the specific shopper. Includes locale, platform, tendency, vocabulary, emotional tone, target length, Pidgin/price notes, and Nigerian context when locale is NG.</p>
+      </div>
+      <div class="card">
+        <h3>User Prompt</h3>
+        <p class="small">Contains own past reviews, community reviews, exact-item caveats, extracted risks, product metadata, price, description, source item context, category bias, and retrieved rating mix.</p>
+      </div>
+      <div class="card">
+        <h3>Rating Prompt</h3>
+        <p class="small">Built after review generation. It includes the generated review, user rating profile, category mean, retrieved evidence, low/neutral evidence, exact-item distribution, and calibration rules.</p>
+      </div>
+    </div>
+
+    <h3>LLM Provider Layer</h3>
+    <p>
+      <code>LLM_PROVIDER</code> can be <code>gemini</code>, <code>groq</code>, or <code>cerebras</code>. Gemini uses the Google SDK. Groq and Cerebras use OpenAI-compatible <code>/chat/completions</code> requests through <code>httpx</code>. Review generation streams tokens; structured calls request JSON objects.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Call</th><th>Function</th><th>Output</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Review generation</td><td><code>call_review_stream(system, user_prompt)</code></td><td>Streaming text chunks.</td></tr>
+        <tr><td>Rating</td><td><code>call_calibrated_rating(rating_prompt)</code></td><td>JSON: rating, confidence, evidence_used, calibration_reason.</td></tr>
+        <tr><td>Cypher generation</td><td><code>call_generate_cypher(prompt)</code></td><td>JSON: read-only Cypher string.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Deterministic Rating Calibration</h3>
+    <p>
+      After the LLM returns a rating, <code>_calibrate_rating()</code> applies deterministic rules. These rules are important because the evaluation metric is numeric RMSE, and the LLM often anchors on 4 for positive reviews.
+    </p>
+    <ul>
+      <li>Severe failure terms cap the rating at 2.</li>
+      <li>Pass 16 generous bump can move 4 to 5 only for clean positive generated text with generous persona and low item risk.</li>
+      <li>Pass 16 ghost bump can move 4 to 5 on ghost items only when persona history is strong and low-variance.</li>
+      <li>Original rules bump generous caveat-free positives, prevent generous users from being pushed below 4 too easily, and lower ratings when negative terms or low community evidence appear.</li>
+      <li>Every final result stores a <code>pass16_calibration</code> trace in <code>evaluation_context</code>.</li>
+    </ul>
+  </section>
+
+  <section id="eval">
+    <h2>Evaluation Flow</h2>
+    <p>
+      Evaluation pretends an item is unseen by hiding a real review from the model. The hidden review is removed from Neo4j, stored in SQLite, and used as the reference label after generation.
+    </p>
+
+    <div class="flow">
+      <div class="flow-step">
+        <span class="num">1</span>
+        <h3>Select Holdouts</h3>
+        <p class="small"><code>build_eval_split.py</code> finds users with enough reviews and picks balanced hidden reviews.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">2</span>
+        <h3>Store Payload</h3>
+        <p class="small">Full review, item metadata, Neo4j restore payload, seed, and source go into <code>eval_holdout_reviews</code>.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">3</span>
+        <h3>Delete From KG</h3>
+        <p class="small"><code>apply_eval_split.py --delete</code> removes only the hidden <code>Review</code> node and relationships.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">4</span>
+        <h3>Rebuild Train Persona</h3>
+        <p class="small"><code>rebuild_eval_personas.py</code> recomputes persona stats from non-held-out reviews.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">5</span>
+        <h3>Run Eval</h3>
+        <p class="small"><code>run_eval.py</code> checks the hidden review is absent, simulates, and scores.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">6</span>
+        <h3>Report</h3>
+        <p class="small">Writes <code>rubric_cases.jsonl</code> and <code>rubric_summary.json</code>.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">7</span>
+        <h3>Restore If Needed</h3>
+        <p class="small"><code>apply_eval_split.py --restore</code> recreates hidden reviews from SQLite payloads.</p>
+      </div>
+      <div class="flow-step">
+        <span class="num">8</span>
+        <h3>Compare Passes</h3>
+        <p class="small">Use the same review IDs to compare RMSE and ROUGE across optimization passes.</p>
+      </div>
+    </div>
+
+    <h3>Eval Commands</h3>
+    <pre>python3 -m task_a.evaluation.build_eval_split \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --amazon-target 500 \
+  --ng-target 40 \
+  --seed 42
+
+python3 -m task_a.evaluation.apply_eval_split \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --delete
+
+python3 -m task_a.evaluation.rebuild_eval_personas \
+  --sqlite-path personas.db \
+  --split-name task_a_v1
+
+PYTHONPATH=. LLM_PROVIDER=groq \
+  python3 -m task_a.evaluation.run_eval \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --persona-source eval_train \
+  --max-cases 30 \
+  --skip-bertscore</pre>
+
+    <h3>Rubric Metrics</h3>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Code path</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>ROUGE-L max/mean</td><td><code>task_a/evaluation/rubric_evaluator.py</code></td><td>Text overlap against hidden review and optional proxy references.</td></tr>
+        <tr><td>BERTScore F1</td><td><code>task_a/evaluation/rubric_evaluator.py</code></td><td>Semantic similarity. Often skipped during optimization runs due speed/dependency cost.</td></tr>
+        <tr><td>RMSE heldout user</td><td><code>evaluate_rubric()</code></td><td>Main internal Task A rating metric: predicted rating vs hidden real rating.</td></tr>
+        <tr><td>RMSE proxy mean</td><td><code>evaluate_rubric()</code></td><td>Predicted rating vs mean rating of proxy/community references.</td></tr>
+        <tr><td>RMSE persona category</td><td><code>evaluate_rubric()</code></td><td>Predicted rating vs user's train-only category mean.</td></tr>
+        <tr><td>Behavioral proxies</td><td><code>task_a/evaluation/review_evaluator.py</code></td><td>Supplementary emotion/sentiment/topic-style metrics, not the official primary score.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <strong>Leakage rule:</strong>
+      During eval, production persona tables remain untouched, but eval mode must use <code>PERSONA_SOURCE=eval_train</code>. The hidden review must be absent from Neo4j before generation, and <code>heldout_review_id</code> is only used to exclude it from item stats.
+    </div>
+  </section>
+
+  <section id="scoring">
+    <h2>Scoring Calculations And Pass Results</h2>
+    <p>
+      The evaluation harness is designed to mirror the Task A judging rubric as closely as we can with local held-out labels. A real review is removed from Neo4j, the model predicts review text and a star rating, and the evaluator compares the prediction to the hidden SQLite copy of that review.
+    </p>
+
+    <h3>Per-Case Rating Error</h3>
+    <p>
+      For every held-out review case <code>i</code>, the evaluator has a hidden true user rating <code>y_i</code> and the model returns a predicted integer rating <code>ŷ_i</code>.
+    </p>
+    <pre>error_i = ŷ_i - y_i
+squared_error_i = (ŷ_i - y_i)^2
+absolute_error_i = abs(ŷ_i - y_i)</pre>
+
+    <div class="callout">
+      <strong>Important implementation detail:</strong>
+      <code>evaluate_rubric()</code> stores a per-case <code>rmse_heldout_user</code> using <code>sqrt((ŷ_i - y_i)^2)</code>, which is numerically the same as absolute error for one case. <code>RubricSummary</code> then squares those per-case values again and computes the macro RMSE across the run. So the final run-level RMSE is the standard rating RMSE.
+    </div>
+
+    <h3>Run-Level Rating Metrics</h3>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Formula</th><th>What it tells us</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>rmse_heldout_user</code></td>
+          <td><code>sqrt(sum((ŷ_i - y_i)^2) / n)</code></td>
+          <td>Main Task A rating accuracy metric. Lower is better. This is the number we optimize first.</td>
+        </tr>
+        <tr>
+          <td><code>mae_heldout_user</code></td>
+          <td><code>sum(abs(ŷ_i - y_i)) / n</code></td>
+          <td>Average star distance. Easier to interpret than RMSE, but it penalizes catastrophic misses less.</td>
+        </tr>
+        <tr>
+          <td><code>sum_sq</code></td>
+          <td><code>sum((ŷ_i - y_i)^2)</code></td>
+          <td>Useful for small fixed sets. On 15 cases, <code>sum_sq=9</code> means <code>sqrt(9/15)=0.7746</code>.</td>
+        </tr>
+        <tr>
+          <td><code>rmse_proxy_mean</code></td>
+          <td><code>sqrt(mean((ŷ_i - proxy_mean_i)^2))</code></td>
+          <td>Diagnostic only. Compares prediction to community/proxy review average, not the user's hidden rating.</td>
+        </tr>
+        <tr>
+          <td><code>rmse_persona_category</code></td>
+          <td><code>sqrt(mean((ŷ_i - category_mean_i)^2))</code></td>
+          <td>Diagnostic only. Checks if ratings align with the user's train-only category bias.</td>
+        </tr>
+        <tr>
+          <td><code>rmse_persona_mean</code></td>
+          <td><code>sqrt(mean((ŷ_i - persona_mean_i)^2))</code></td>
+          <td>Diagnostic only. Checks alignment with the user's overall train-only rating tendency.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Text Quality Metrics</h3>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Calculation</th><th>How we use it</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>ROUGE-L</code></td>
+          <td>
+            Longest common subsequence F1 between predicted review and reference review.
+            If <code>rouge-score</code> is installed, the evaluator uses <code>rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)</code>.
+          </td>
+          <td>Secondary text quality signal. We track both max over references and mean across references.</td>
+        </tr>
+        <tr>
+          <td>Fallback ROUGE-L</td>
+          <td><code>P = LCS / len(pred_tokens)</code>, <code>R = LCS / len(ref_tokens)</code>, <code>F1 = 2PR / (P + R)</code></td>
+          <td>Used if <code>rouge-score</code> is unavailable.</td>
+        </tr>
+        <tr>
+          <td><code>BERTScore F1</code></td>
+          <td>Semantic similarity from <code>bert-score</code>, <code>lang="en"</code>, max/mean over references.</td>
+          <td>Rubric-aligned but usually skipped during optimization runs because it is slower and not needed for quick rating A/Bs.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Reference Selection During Eval</h3>
+    <ol>
+      <li><strong>Held-out user review:</strong> always the primary reference for eval holdout cases. Its text and rating come from <code>eval_holdout_reviews</code>.</li>
+      <li><strong>Proxy community reviews:</strong> exact-item ground-truth reviews fetched after generation. They can support ROUGE/proxy diagnostics but do not replace the hidden user label.</li>
+      <li><strong>Anchor reviews:</strong> retrieved prompt anchors used as fallback references in synthetic fixture mode when no better proxy exists.</li>
+      <li><strong>Persona/category targets:</strong> train-only persona stats loaded from <code>eval_personas_train</code> and <code>eval_category_rating_bias_train</code> when <code>--persona-source eval_train</code> is used.</li>
+    </ol>
+
+    <h3>Concrete Example: Pass 8 First-15 Score</h3>
+    <p>
+      Pass 8 on the first 15 fresh holdouts produced <code>rmse_heldout_user = 0.7745966692</code>. That corresponds to:
+    </p>
+    <pre>n = 15
+rmse = 0.7745966692
+sum_sq = rmse^2 * n
+sum_sq = 0.7745966692^2 * 15
+sum_sq = 9
+
+Interpretation:
+- across 15 hidden reviews, total squared star error was 9
+- this could be nine 1-star misses, or fewer larger misses
+- lower sum_sq is better; one 3-star miss contributes 9 by itself</pre>
+
+    <h3>Pass Scores From Our Recorded Testing</h3>
+    <p>
+      The current active checkpoint is Pass 9: item embeddings plus item-vector retrieval, with CatBoost removed from the active code path. Both consistency runs below used Cerebras on the same hidden split, changing only the offset.
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>Run</th><th>Offset</th><th>n</th><th>Heldout RMSE</th><th>MAE</th><th>ROUGE-L max</th><th>ROUGE-L mean</th><th>Retrieval mix</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Pass 9 first 30</td><td><code>0</code></td><td>30</td><td><code>0.8756</code></td><td><code>0.5000</code></td><td><code>0.1394</code></td><td><code>0.1179</code></td><td>23 exact-item, 7 item-vector</td></tr>
+        <tr><td>Pass 9 offset 30</td><td><code>30</code></td><td>30</td><td><code>1.0801</code></td><td><code>0.8333</code></td><td><code>0.1501</code></td><td><code>0.1220</code></td><td>26 exact-item, 4 item-vector</td></tr>
+        <tr><td>Combined Pass 9</td><td><code>0-59</code></td><td>60</td><td><code>0.9832</code></td><td><code>0.6667</code></td><td>n/a</td><td>n/a</td><td>49 exact-item, 11 item-vector</td></tr>
+      </tbody>
+    </table>
+
+    <p class="small muted">
+      Older pass rows below remain as historical notes from the optimization loop, but the build-on checkpoint is now Pass 9.
+    </p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Run / Pass</th>
+          <th>Eval set</th>
+          <th>Provider</th>
+          <th>n</th>
+          <th>Heldout RMSE</th>
+          <th>MAE</th>
+          <th>ROUGE-L max</th>
+          <th>ROUGE-L mean</th>
+          <th>Decision / interpretation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Early Groq baseline</td>
+          <td>Original same 15</td>
+          <td>Groq</td>
+          <td>15</td>
+          <td><code>1.0328</code></td>
+          <td>n/a</td>
+          <td><code>0.1328</code></td>
+          <td><code>0.1017</code></td>
+          <td>Reference baseline before the later optimization loop.</td>
+        </tr>
+        <tr>
+          <td>Cerebras v2 accepted</td>
+          <td>Original same 15</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>1.0000</code></td>
+          <td>n/a</td>
+          <td><code>0.1489</code></td>
+          <td><code>0.1205</code></td>
+          <td>Accepted over v1/v3 because text quality and heldout RMSE improved relative to early baseline.</td>
+        </tr>
+        <tr>
+          <td>Random-15 baseline</td>
+          <td>Untuned random 15</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>0.9309</code></td>
+          <td>n/a</td>
+          <td><code>0.1515</code></td>
+          <td><code>0.1231</code></td>
+          <td>Clean validation signal before Pass 1.</td>
+        </tr>
+        <tr>
+          <td>Pass 1</td>
+          <td>Same random 15</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>0.8944</code></td>
+          <td>n/a</td>
+          <td><code>0.1510</code></td>
+          <td><code>0.1236</code></td>
+          <td>Kept. Added user's own low/neutral style anchors and improved heldout RMSE.</td>
+        </tr>
+        <tr>
+          <td>Fresh-30 breadth baseline</td>
+          <td>Fresh 30 excluding earlier random-15 IDs</td>
+          <td>Groq <code>openai/gpt-oss-120b</code></td>
+          <td>30</td>
+          <td><code>1.0488</code></td>
+          <td>n/a</td>
+          <td><code>0.1404</code></td>
+          <td><code>0.1163</code></td>
+          <td>Broader, harder set. Shows rating misses become worse with more persona/item diversity.</td>
+        </tr>
+        <tr>
+          <td>Pass 5</td>
+          <td>First 15 fresh holdouts</td>
+          <td>Cerebras / Groq comparison</td>
+          <td>15</td>
+          <td><code>0.9309 -> 0.7746</code></td>
+          <td>n/a</td>
+          <td><code>0.1572 -> 0.1582</code></td>
+          <td><code>0.1254 -> 0.1240</code></td>
+          <td>Kept. Aspect-severity calibration gave the first major rating improvement.</td>
+        </tr>
+        <tr>
+          <td>Pass 6</td>
+          <td>First 15 fresh holdouts</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>0.7746</code></td>
+          <td>n/a</td>
+          <td><code>0.1554</code></td>
+          <td>n/a</td>
+          <td>Reverted. RMSE tied Pass 5 but ROUGE and diagnostics worsened.</td>
+        </tr>
+        <tr>
+          <td>Pass 7</td>
+          <td>First 15 fresh holdouts</td>
+          <td>Groq <code>openai/gpt-oss-120b</code></td>
+          <td>15</td>
+          <td><code>1.1547</code></td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>Reverted. Positive guard over-promoted a true 2-star case to 5.</td>
+        </tr>
+        <tr>
+          <td><strong>Pass 8 best checkpoint</strong></td>
+          <td>First 15 fresh holdouts</td>
+          <td>Cerebras <code>gpt-oss-120b</code></td>
+          <td>15</td>
+          <td><strong><code>0.7746</code></strong></td>
+          <td>n/a</td>
+          <td><strong><code>0.1603</code></strong></td>
+          <td><strong><code>0.1264</code></strong></td>
+          <td>Kept. Same RMSE as Pass 5, best ROUGE-L, cleaner architecture: filtered aspect injection + tendency-calibrated rating prompt.</td>
+        </tr>
+        <tr>
+          <td>Pass 8 expanded</td>
+          <td>Expanded 30 holdout IDs, 26 completed</td>
+          <td>Cerebras <code>gpt-oss-120b</code></td>
+          <td>26</td>
+          <td><code>0.9806</code></td>
+          <td><code>0.7308</code></td>
+          <td><code>0.1513</code></td>
+          <td><code>0.1246</code></td>
+          <td>Harder validation. Dominant failure: 11/26 cases predicted 4 when true rating was 5.</td>
+        </tr>
+        <tr>
+          <td>Pass 9</td>
+          <td>First 15 fresh holdouts</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>1.0328</code></td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>Reverted. Anti-caveat prompt fixed some 5-star misses but broke true 4-star cases.</td>
+        </tr>
+        <tr>
+          <td>Pass 10</td>
+          <td>First 15 fresh holdouts</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>1.0954</code></td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>Reverted. Uniformly positive retrieval was not trustworthy enough to suppress caveats.</td>
+        </tr>
+        <tr>
+          <td>Pass 11</td>
+          <td>First 15 fresh holdouts</td>
+          <td>Cerebras</td>
+          <td>15</td>
+          <td><code>0.8165</code></td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>Reverted. Exact-item low-review supplement mostly did not fire because the test cases used category branch.</td>
+        </tr>
+        <tr>
+          <td>Pass 13</td>
+          <td>First 15 fresh holdouts, stopped after 8</td>
+          <td>Cerebras</td>
+          <td>8/15</td>
+          <td><code>>= 1.03</code> minimum</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>Reverted early. Sum_sq already 16 after 8 cases vs P8 sum_sq 8 on comparable progress.</td>
+        </tr>
+        <tr>
+          <td>Pass 14</td>
+          <td>15-case merged eval</td>
+          <td>Mixed Cerebras/Groq</td>
+          <td>15</td>
+          <td><code>0.9661</code></td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>n/a</td>
+          <td>Reverted. Sum_sq worsened 9 -> 14; caveat suppression caused over-prediction.</td>
+        </tr>
+        <tr>
+          <td>Pass 15</td>
+          <td>Partial verification only</td>
+          <td>Cerebras/Groq/Gemini attempts</td>
+          <td>4 completed in saved Cerebras partial</td>
+          <td><code>0.7071</code> partial</td>
+          <td><code>0.5000</code> partial</td>
+          <td><code>0.1628</code> partial</td>
+          <td><code>0.1296</code> partial</td>
+          <td>Not enough for final decision; full same-15 was blocked by provider rate limits. Expected if only zip-ties fixed: <code>sqrt(8/15)=0.7303</code>.</td>
+        </tr>
+        <tr>
+          <td>Pass 16</td>
+          <td>Groq first-5 attempt, 2 completed</td>
+          <td>Groq</td>
+          <td>2</td>
+          <td><code>1.4142</code></td>
+          <td><code>1.0000</code></td>
+          <td><code>0.1226</code></td>
+          <td><code>0.1043</code></td>
+          <td>Checkpointed but not accepted as best. Early shared-case comparison regressed vs P8.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Why Pass 9 Is The Build-On Checkpoint</h3>
+    <ul>
+      <li>It keeps exact-item graph evidence as the first retrieval tier and adds item-vector retrieval for sparse/unknown products.</li>
+      <li>It removes the CatBoost branch after offline rescoring showed no improvement over the LLM/calibration path.</li>
+      <li>It has a 60-case Cerebras working estimate of about <code>0.9832</code> RMSE and <code>0.6667</code> MAE.</li>
+      <li>The remaining bottleneck is hidden low/medium ratings where visible public evidence is mostly positive.</li>
+      <li>The next work should improve negative/neutral evidence selection and calibration rather than adding another rating head.</li>
+    </ul>
+
+    <div class="callout warn">
+      <strong>Provider caution:</strong>
+      Scores are only cleanly comparable when the same provider/model, review IDs, persona source, and delay/retry settings are used. Mixed-provider runs are useful diagnostics but weaker evidence for keeping or reverting code.
+    </div>
+  </section>
+
+  <section id="optimization">
+    <h2>Optimization Levers</h2>
+    <p>
+      These are the places teammates can change the system with the clearest expected effects. The safest path is to change one layer at a time, run the same held-out review IDs, and compare <code>rmse_heldout_user</code>, catastrophic misses, and ROUGE-L.
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>Lever</th><th>Where</th><th>Expected improvement</th><th>Risk</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Item embeddings</td>
+          <td><code>pipeline/item_embedding_text.py</code>, <code>scripts/backfill_item_embeddings.py</code>, and the <code>item_embedding</code> Neo4j vector index.</td>
+          <td>Already active in Pass 9. Maintain/rebackfill when item text fields or embedding model changes.</td>
+          <td>Must avoid replacing exact-item stats; semantic similarity can retrieve behaviorally different products.</td>
+        </tr>
+        <tr>
+          <td>Hybrid item-vector retrieval</td>
+          <td><code>task_a/inference/retrieval.py</code>, between exact item and category fallback.</td>
+          <td>Find reviews from semantically similar products, then rerank by graph metadata.</td>
+          <td>Needs strict category/price/rating-distribution guards.</td>
+        </tr>
+        <tr>
+          <td>Price-aware reranking</td>
+          <td>Retrieval scoring and prompt signals.</td>
+          <td>Improves Nigerian/value-sensitive cases and premium/budget expectations.</td>
+          <td>Raw price in embeddings is weak; use structured price buckets/proximity.</td>
+        </tr>
+        <tr>
+          <td>Better aspect extraction</td>
+          <td><code>prompt_builder.extract_aspect_risks()</code></td>
+          <td>Improves true low/mixed cases by surfacing real item defects.</td>
+          <td>Over-extracting category complaints can drag positive items down.</td>
+        </tr>
+        <tr>
+          <td>Persona confidence weighting</td>
+          <td><code>derive_signals()</code>, rating prompt, calibration rules.</td>
+          <td>High-review-count users should trust persona stats more than low-history users.</td>
+          <td>Can overfit frequent users if heldout split is too narrow.</td>
+        </tr>
+        <tr>
+          <td>Collaborative filtering tier</td>
+          <td>Neo4j query over similar users/categories/items.</td>
+          <td>Useful when exact item and item-vector evidence are thin.</td>
+          <td>More complex to evaluate and easier to leak if not careful with holdouts.</td>
+        </tr>
+        <tr>
+          <td>Nigerian voice/stylometry injection</td>
+          <td><code>get_cultural_voice_block()</code> and prompt builders.</td>
+          <td>Improves human eval and text quality for NG cases.</td>
+          <td>Can become caricature if over-applied; should be gated by actual persona stats.</td>
+        </tr>
+        <tr>
+          <td>Batch calibration</td>
+          <td>Evaluation/inference wrapper around rating predictions.</td>
+          <td>Corrects systematic 4-star anchoring across a batch.</td>
+          <td>Workflow change; needs strong A/B testing before production use.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Recommended Next Architecture: Item-Vector Hybrid</h3>
+    <div class="callout good">
+      <p>
+        Keep the KG as the source of truth, then add item embeddings as a fallback/reranker. The strongest retrieval stack would be:
+      </p>
+      <ol>
+        <li>Exact same-item reviews and full item rating distribution when available.</li>
+        <li>Item-vector similar products inside the same or nearby category.</li>
+        <li>Rerank similar products by price proximity, rating distribution, verified/helpful evidence, locale, and persona category affinity.</li>
+        <li>Only then fall back to broad category or review-vector search.</li>
+      </ol>
+      <p>
+        This preserves what the graph is good at while fixing the broad-category weakness that hurts sparse items.
+      </p>
+    </div>
+
+    <h3>What To Monitor On Every Pass</h3>
+    <ul>
+      <li><code>rmse_heldout_user</code>: main score.</li>
+      <li>Sum of squared rating errors on fixed review IDs: easiest pass-to-pass comparison.</li>
+      <li>Catastrophic misses: true <= 3 predicted >= 5, or true >= 5 predicted <= 3.</li>
+      <li>ROUGE-L max: text quality and content overlap.</li>
+      <li>Per-case retrieval branch and item stats: tells whether a pass actually changed the evidence.</li>
+      <li>Calibration trace: tells whether deterministic rules fired and whether they helped.</li>
+    </ul>
+  </section>
+
+  <section id="quick-reference">
+    <h2>Quick Reference</h2>
+    <table>
+      <thead>
+        <tr><th>Question</th><th>Where to look</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Why did a generated rating change?</td><td>Check <code>task_a/evaluation/output/.../rubric_cases.jsonl</code> -> <code>evaluation_context.rating_evidence</code> and <code>evaluation_context.pass16.calibration</code>.</td></tr>
+        <tr><td>What evidence reached the prompt?</td><td>Run a dry run via <code>python3 -m task_a.inference.task_a ... --dry-run</code> or inspect <code>anchor_reviews</code> and graph_data in eval output.</td></tr>
+        <tr><td>Did eval leak the hidden review?</td><td><code>run_eval.py</code> calls <code>_review_exists()</code> and skips cases whose hidden review still exists in Neo4j.</td></tr>
+        <tr><td>How do I restore deleted eval reviews?</td><td><code>python3 -m task_a.evaluation.apply_eval_split --sqlite-path personas.db --split-name task_a_v1 --restore</code></td></tr>
+        <tr><td>How do I make a fair A/B?</td><td>Use the same <code>--review-ids-file</code>, same provider/model, same delay/retry settings, same split, and a fresh output directory.</td></tr>
+        <tr><td>Where do item embeddings live?</td><td>On existing Neo4j <code>Item</code> nodes as <code>embedding</code>, <code>embeddingText</code>, <code>embeddingModel</code>, <code>embeddingDim</code>, <code>embeddingHash</code>, and <code>embeddingUpdatedAt</code>. The text builder is <code>pipeline/item_embedding_text.py</code>.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <p class="footer-note">
+    This document describes the current committed code path and the optimization surfaces available to the team.
+  </p>
+</main>
+</body>
+</html>

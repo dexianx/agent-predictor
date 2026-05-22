@@ -1,6 +1,6 @@
 import pytest
 
-import inference.llm_client as llm
+import task_a.inference.llm_client as llm
 
 
 @pytest.mark.parametrize(

@@ -1,49 +1,106 @@
-# Task A Architecture After Item Embeddings
+# Task A Architecture
 
 Date: 2026-05-22
 
 ## Current Status
 
-Task A now runs without CatBoost in the active inference path. CatBoost model artifacts have been moved to:
+Task A is now organized under `task_a/` and runs as a pure retrieval + LLM review/rating pipeline. The CatBoost experiment was removed from the active repo surface:
 
-- `dormant/catboost/data/`
-- `dormant/catboost/models/`
+- removed `training/`
+- removed `dormant/catboost/`
+- removed CatBoost rating-head/rescore modules
+- removed CatBoost-only dependencies from `requirements.txt`
 
-The CatBoost source code remains in the repository for future experiments, but active Task A inference uses only:
+Root-level `inference/` and `evaluation/` packages were removed. Use `task_a.inference.*` and `task_a.evaluation.*` directly.
 
-- SQLite persona/profile data
-- Neo4j graph retrieval
-- Neo4j `Item.embedding` vector retrieval
-- LLM review generation
-- LLM/deterministic rating calibration
+## Folder Layout
 
-## Runtime Flow
+```txt
+task_a/
+  README.md
+  inference/
+    task_a.py              # simulate_review orchestration
+    retrieval.py           # Neo4j exact-item, item-vector, category, review-vector retrieval
+    prompt_builder.py      # persona/evidence prompt construction
+    persona_loader.py      # SQLite persona loading
+    llm_client.py          # Groq/Cerebras/Gemini-compatible LLM calls
+  evaluation/
+    run_eval.py            # hidden split eval runner
+    eval_store.py          # SQLite eval split/holdout store
+    build_eval_split.py
+    apply_eval_split.py
+    rebuild_eval_personas.py
+    rubric_evaluator.py
+    review_evaluator.py
 
-1. `simulate_review()` receives `user_id`, product name, optional item id, price, category, brand, and description.
-2. Persona is loaded from SQLite using `inference.persona_loader.load_persona()`.
-3. Item metadata is resolved from Neo4j when an item id or title match exists.
+pipeline/
+  item_embedding_text.py   # shared item embedding text builder
+  neo4j_writer.py          # shared Neo4j schema/index creation
+
+scripts/
+  backfill_item_embeddings.py
+
+task_b/
+  README.md                # placeholder for recommendation work
+```
+
+`pipeline/` remains shared because Task A and Task B use the same populated Neo4j knowledge graph.
+
+## Active Runtime Flow
+
+1. API or eval code creates a `SimulateRequest`.
+2. `task_a.inference.task_a.simulate_review()` loads the user persona from SQLite.
+3. The target item is resolved in Neo4j by `item_id` or title.
 4. Canonical item embedding text is built from product fields:
    - title
    - brand/store
    - category/sub-category
    - price bucket
    - features/description/details
-   - source rating/count when available
-5. The same sentence-transformer model used for item backfill embeds that text.
-6. Retrieval fetches:
-   - user's own style reviews
-   - exact-item community reviews when available
-   - item-vector similar product reviews
-   - category reviews as fallback
-   - LLM Cypher / review-vector fallback only if needed
-7. Prompt signals are derived from persona + retrieved reviews + item stats.
+   - source average rating and rating count when available
+5. The sentence-transformer embedder encodes that text.
+6. Retrieval gathers evidence in this order:
+   - exact-item community reviews
+   - item-vector similar product reviews from `Item.embedding`
+   - category-scoped structural reviews
+   - LLM-generated read-only Cypher fallback
+   - review-vector fallback via `Review.embedding`
+7. Prompt signals are derived from persona history, item stats, own reviews, and community anchors.
 8. The LLM generates review text.
-9. The LLM returns a rating, then `_calibrate_rating()` applies deterministic safeguards.
-10. Final output includes review text, rating, graph context, rating audit, and retrieval branch.
+9. The LLM returns a 1-5 rating.
+10. `_calibrate_rating()` applies deterministic guards for caveats, generous-user bumping, and sparse exact-item behavior.
+11. The result includes review text, final rating, retrieval branch, graph context, item rating stats, and rating audit fields.
 
-## Neo4j Item Embedding Query
+## Neo4j Item Embeddings
 
-The active item-vector path queries `item_embedding` and then fetches reviews under similar products:
+`Item.embedding` is stored directly on existing `Item` nodes. Review embeddings are untouched.
+
+Properties added to `Item`:
+
+```txt
+embedding
+embeddingText
+embeddingModel
+embeddingDim
+embeddingHash
+embeddingUpdatedAt
+```
+
+Vector index:
+
+```cypher
+CREATE VECTOR INDEX item_embedding IF NOT EXISTS
+FOR (i:Item)
+ON (i.embedding)
+OPTIONS {
+  indexConfig: {
+    `vector.dimensions`: 384,
+    `vector.similarity_function`: 'cosine'
+  }
+};
+```
+
+Runtime query pattern:
 
 ```cypher
 CALL db.index.vector.queryNodes('item_embedding', $top_k, $embedding)
@@ -57,13 +114,7 @@ WHERE u.id <> $user_id
 RETURN
   similarItem.id AS item_id,
   similarItem.title AS item_title,
-  similarItem.brand AS brand,
   similarItem.category AS category,
-  similarItem.subCategory AS sub_category,
-  similarItem.priceUsd AS price_usd,
-  similarItem.priceNgn AS price_ngn,
-  coalesce(similarItem.sourceAverageRating, similarItem.avgRating) AS source_average_rating,
-  similarItem.ratingCount AS rating_count,
   score AS item_similarity,
   r.id AS review_id,
   toFloat(r.rating) AS rating,
@@ -72,14 +123,11 @@ RETURN
   coalesce(r.helpfulVote, 0) AS helpful_vote,
   r.locale AS locale,
   r.platform AS platform
-ORDER BY
-  item_similarity DESC,
-  verified_purchase DESC,
-  helpful_vote DESC
+ORDER BY item_similarity DESC, verified_purchase DESC, helpful_vote DESC
 LIMIT $raw_limit;
 ```
 
-Python then reranks reviews with structured guards:
+Python then reranks with structured guards:
 
 ```python
 final_retrieval_score = (
@@ -92,81 +140,63 @@ final_retrieval_score = (
 )
 ```
 
-This branch sits between exact-item retrieval and broad category fallback.
+## Latest Scores
 
-## Retrieval Branch Order
+Both Pass 9 consistency runs used Cerebras with CatBoost removed/disabled.
 
-The content-anchor order is now:
+| Run | Cases | Offset | Provider | RMSE | MAE | ROUGE-L Max | ROUGE-L Mean | exact_item | item_vector |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| Pass 9 first 30 | 30 | 0 | Cerebras | 0.8756 | 0.5000 | 0.1394 | 0.1179 | 23 | 7 |
+| Pass 9 offset 30 | 30 | 30 | Cerebras | 1.0801 | 0.8333 | 0.1501 | 0.1220 | 26 | 4 |
+| Combined Pass 9 | 60 | 0-59 | Cerebras | 0.9832 | 0.6667 | n/a | n/a | 49 | 11 |
 
-1. Exact item reviews
-2. Item-vector similar product reviews from `Item.embedding`
-3. Category-scoped structural reviews
-4. LLM-generated read-only Cypher
-5. Review-vector fallback via `review_embedding`
+The first 30-case run was a kinder slice. The second slice exposed more hidden low/medium ratings where the current system over-predicts positivity. The more honest working estimate is therefore about `0.98 RMSE / 0.67 MAE` over these 60 cases.
 
-In the latest same-30 Cerebras eval, branch usage was:
+## Reproducibility
 
-| Branch | Count |
-|---|---:|
-| exact_item | 23 |
-| item_vector | 7 |
+Install dependencies:
 
-The prior same-30 CatBoost-gated run used the older retrieval path and reported all 30 as `category`.
-
-## Score Comparison
-
-All rows below are Task A hidden split runs unless noted.
-
-| Run | Cases | Provider | Retrieval / Rating Mode | RMSE | MAE | ROUGE-L Max | ROUGE-L Mean |
-|---|---:|---|---|---:|---:|---:|---:|
-| Current | 30 | Cerebras | item-vector retrieval, CatBoost off | 0.8756 | 0.5000 | 0.1394 | 0.1179 |
-| Previous | 30 | Cerebras | gated deployable no-category CatBoost | 0.9661 | 0.6667 | 0.1410 | 0.1165 |
-| Offline mode compare | 30 | Cerebras outputs | user_mean baseline | 0.8756 | 0.5000 | n/a | n/a |
-| Offline mode compare | 30 | Cerebras outputs | weighted heuristic | 0.9309 | 0.5333 | n/a | n/a |
-| Offline mode compare | 30 | Cerebras outputs | CatBoost-only | 1.6931 | 1.3333 | n/a | n/a |
-| Offline mode compare | 30 | Cerebras outputs | CatBoost no-category | 1.3416 | 1.2000 | n/a | n/a |
-| Earlier partial | 9 | Groq | Pass 8 baseline | 1.3333 | 0.8889 | 0.1323 | 0.0938 |
-
-## Interpretation
-
-The current best active architecture is not CatBoost. The best active result came from:
-
-- Neo4j exact-item evidence
-- new item-vector fallback for unknown/sparse products
-- LLM rating calibration
-- no CatBoost override
-
-The item-vector pass improved the same-30 run from `0.9661` RMSE to `0.8756` RMSE and reduced MAE from `0.6667` to `0.5000`.
-
-The remaining hard failures are mostly hidden-negative cases where visible exact-item or similar-item evidence is strongly positive. The sheet and feather-pillow cases are examples: the system sees positive public/community evidence and predicts too high against a low hidden user rating.
-
-## Test Results
-
-After moving CatBoost artifacts dormant:
-
-```txt
-tests/test_item_embeddings_and_rating_training.py tests/test_pass16.py pipeline/tests
-18 passed
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
-Full root pytest after installing the declared agent dependency `pydantic-settings`:
+Backfill item embeddings when the Neo4j graph exists:
 
-```txt
-60 passed, 2 skipped, 2 failed
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.backfill_item_embeddings
 ```
 
-The two remaining full-suite failures are environmental/tooling issues:
+Run the current Task A eval:
 
-- `agents/tests/test_mcp_server.py::test_mcp_server_lists_dataset_tools`
-  - missing `agents.mcp` in the root venv
-- `tests/test_api.py::test_ws_simulate_full_flow`
-  - expects a live WebSocket server at `localhost:8000`
+```bash
+PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
+.venv/bin/python -m task_a.evaluation.run_eval \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --max-cases 30 \
+  --skip-bertscore \
+  --output-dir task_a/evaluation/output/task_a_v1_pass9_recheck
+```
+
+Run a different slice:
+
+```bash
+PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
+.venv/bin/python -m task_a.evaluation.run_eval \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --max-cases 30 \
+  --offset 30 \
+  --skip-bertscore \
+  --output-dir task_a/evaluation/output/task_a_v1_pass9_offset30
+```
 
 ## Current Recommendation
 
-Keep CatBoost dormant. The next likely accuracy gain is not another tabular head; it is better evidence selection for hidden-negative cases:
+Keep the active architecture focused on retrieval quality and rating calibration. The next likely gains are:
 
-- stronger exact-item negative/neutral sampling
-- stricter sentiment diversity for item-vector reviews
-- explicit contradiction handling when public evidence is high but generated review includes caveats
-- rating guardrails for high-mean users who occasionally give low ratings
+- stronger negative/neutral evidence sampling for exact-item reviews
+- item-vector review diversity by rating bucket
+- stricter guardrails when exact-item public evidence is positive but the hidden user may be critical
+- better handling of one-off low ratings from otherwise generous users

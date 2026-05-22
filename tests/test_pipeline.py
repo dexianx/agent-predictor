@@ -1,6 +1,6 @@
 import pytest
-from evaluation.amazon_fixtures import EVAL_USER_ID, UNKNOWN_PRODUCT_CASES
-from inference.task_a import simulate_review
+from task_a.evaluation.amazon_fixtures import EVAL_USER_ID, UNKNOWN_PRODUCT_CASES
+from task_a.inference.task_a import simulate_review
 
 
 @pytest.mark.asyncio

@@ -75,7 +75,7 @@ Run:
 ```bash
 LLM_PROVIDER=cerebras CEREBRAS_MODEL=gpt-oss-120b \
 LLM_MAX_RETRIES=1 LLM_RETRY_BASE_SECONDS=12 \
-.venv/bin/python -m evaluation.run_eval \
+.venv/bin/python -m task_a.task_a.evaluation.run_eval \
   --sqlite-path personas.db \
   --split-name task_a_v1 \
   --persona-source eval_train \
@@ -802,7 +802,7 @@ Computes `user_tendency` from `persona["rating_mean"]` (≥4.3→generous, ≥3.
 
 **Eval status:** All three providers (Cerebras, Groq, Gemini free-tier) hit rate/daily limits during verification runs on 2026-05-21. The code change is implemented and confirmed correct by inspection but RMSE comparison to P8 is pending. When quotas reset, run:
 ```bash
-set -a && source .env && set +a && PYTHONPATH=. .venv/bin/python -m evaluation.run_eval \
+set -a && source .env && set +a && PYTHONPATH=. .venv/bin/python -m task_a.task_a.evaluation.run_eval \
   --split-name task_a_v1 --review-ids-file /tmp/p8_same15_ids.txt \
   --output-dir evaluation/output/task_a_v1_pass15_same15 \
   --skip-bertscore --case-delay-seconds 15
