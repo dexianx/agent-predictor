@@ -123,6 +123,7 @@ RETURN r.text AS text, r.rating AS rating, r.wordCount AS word_count,
 
 QUERY_OWN_RECENT = """
 MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(other:Item)
+WHERE ($exclude_item_id = "" OR other.id <> $exclude_item_id)
 WITH r, other,
      duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age
 ORDER BY age ASC
@@ -135,6 +136,7 @@ RETURN r.text AS text, r.rating AS rating, r.wordCount AS word_count,
 QUERY_OWN_LOW_NEUTRAL = """
 MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(other:Item)
 WHERE toFloat(r.rating) <= 3.0
+  AND ($exclude_item_id = "" OR other.id <> $exclude_item_id)
 WITH r, other,
      duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age
 ORDER BY toFloat(r.rating) ASC, age ASC
@@ -147,6 +149,7 @@ RETURN r.text AS text, r.rating AS rating, r.wordCount AS word_count,
 QUERY_A_SAME_CAT_BY_NAME = """
 MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item)-[:IN_CATEGORY]->(cat:Category)
 WHERE toLower(cat.name) CONTAINS toLower($category)
+  AND ($exclude_item_id = "" OR i.id <> $exclude_item_id)
 WITH r, i,
      duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age
 ORDER BY age ASC
@@ -241,8 +244,9 @@ MATCH (other:User)-[:WROTE]->(r)
 WHERE other.id <> $user_id
 WITH r, i, cat, other,
      duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age,
-     CASE WHEN r.locale = $user_locale THEN 1.0 ELSE 0.3 END AS locale_w
-WITH r, i, cat, age, (locale_w * 0.6 + (1.0 / (1.0 + toFloat(age) / 12.0)) * 0.4) AS score
+     CASE WHEN r.locale = $user_locale THEN 1.0 ELSE 0.3 END AS locale_w,
+     CASE WHEN $brand <> "" AND toLower(i.brand) CONTAINS toLower($brand) THEN 0.10 ELSE 0.0 END AS brand_w
+WITH r, i, cat, age, (locale_w * 0.6 + (1.0 / (1.0 + toFloat(age) / 12.0)) * 0.4 + brand_w) AS score
 ORDER BY score DESC
 LIMIT $N
 RETURN r.text AS text, r.rating AS rating, r.locale AS locale,
@@ -457,6 +461,7 @@ async def fetch_similar_item_reviews_by_embedding(
     user_locale: str,
     target_item_id: str = "",
     category: str = "",
+    brand: str = "",
     target_price_bucket: str = "",
     top_k: int = 50,
     limit: int = 5,
@@ -483,6 +488,7 @@ async def fetch_similar_item_reviews_by_embedding(
         row["score"] = _item_vector_review_score(
             row,
             target_category=category,
+            target_brand=brand,
             target_price_bucket=target_price_bucket,
             user_locale=user_locale,
         )
@@ -518,11 +524,17 @@ def _item_vector_review_score(
     row: dict,
     *,
     target_category: str = "",
+    target_brand: str = "",
     target_price_bucket: str = "",
     user_locale: str = "",
 ) -> float:
     item_similarity = float(row.get("item_similarity") or 0.0)
     category_match = 1.0 if target_category and row.get("category") == target_category else 0.0
+    brand_match = (
+        1.0 if target_brand and row.get("brand")
+        and target_brand.lower() in row.get("brand", "").lower()
+        else 0.0
+    )
     row_price_bucket = price_bucket(row.get("price_usd"), row.get("price_ngn"))
     price_bucket_match = 1.0 if target_price_bucket and row_price_bucket == target_price_bucket else 0.0
     locale_match = 1.0 if user_locale and row.get("locale") == user_locale else 0.0
@@ -531,7 +543,8 @@ def _item_vector_review_score(
     return (
         0.45 * item_similarity
         + 0.20 * category_match
-        + 0.15 * price_bucket_match
+        + 0.05 * brand_match
+        + 0.10 * price_bucket_match
         + 0.10 * locale_match
         + 0.05 * verified_purchase
         + 0.05 * helpful_vote_score
@@ -685,9 +698,15 @@ async def fetch_own_reviews(
     K: int = 3,
     category: str = "",
     brand: str = "",
+    exclude_item_id: str = "",
 ) -> list[dict]:
     async def add_low_neutral(rows: list[dict]) -> list[dict]:
-        result = await session.run(QUERY_OWN_LOW_NEUTRAL, user_id=user_id, K=2)
+        result = await session.run(
+            QUERY_OWN_LOW_NEUTRAL,
+            user_id=user_id,
+            exclude_item_id=exclude_item_id or "",
+            K=2,
+        )
         extra = [dict(r) async for r in result]
         seen = {(r.get("item_name"), r.get("text")) for r in rows}
         for r in extra:
@@ -700,12 +719,23 @@ async def fetch_own_reviews(
     if not item_id:
         # Category-based: user's past reviews in the same product space
         if category:
-            result = await session.run(QUERY_A_SAME_CAT_BY_NAME, user_id=user_id, category=category, K=K)
+            result = await session.run(
+                QUERY_A_SAME_CAT_BY_NAME,
+                user_id=user_id,
+                category=category,
+                exclude_item_id=exclude_item_id or "",
+                K=K,
+            )
             rows = [dict(r) async for r in result]
             if rows:
                 return await add_low_neutral(rows)
         # Final fallback: any recent reviews for style signal
-        result = await session.run(QUERY_OWN_RECENT, user_id=user_id, K=K)
+        result = await session.run(
+            QUERY_OWN_RECENT,
+            user_id=user_id,
+            exclude_item_id=exclude_item_id or "",
+            K=K,
+        )
         return await add_low_neutral([dict(r) async for r in result])
 
     # Legacy path: item_id known — same-category then any-category backfill
@@ -862,6 +892,7 @@ async def fetch_others_reviews(
     item_category: str = "",
     item_price_bucket: str = "",
     user_tendency: str = "",
+    exclude_item_id: str = "",
     N: int = 5,
 ) -> list[dict]:
     rows: list[dict] = []
@@ -915,8 +946,9 @@ async def fetch_others_reviews(
             item_vec,
             user_id=user_id,
             user_locale=user_locale,
-            target_item_id=item_id,
+            target_item_id=exclude_item_id or item_id,
             category=item_category,
+            brand=item_brand,
             target_price_bucket=item_price_bucket,
             limit=N,
         )
@@ -932,6 +964,7 @@ async def fetch_others_reviews(
             QUERY_CATEGORY_REVIEWS,
             user_id=user_id,
             category=item_category,
+            brand=item_brand or "",
             user_locale=user_locale,
             N=N,
         )
@@ -981,20 +1014,31 @@ async def fetch_retrieval(
     item_category: str = "",
     item_price_bucket: str = "",
     user_tendency: str = "",
+    exclude_item_id: str = "",
     K: int = 3,
     N: int = 5,
 ) -> tuple[list[dict], list[dict], dict]:
     target_id = item_id or item_name[:48] or (user_query[:48] if user_query else "unknown")
     # Two separate sessions — the async driver socket is not safe for concurrent reads
     async with driver.session() as s1:
-        own = await fetch_own_reviews(s1, user_id, item_id, K, category=item_category, brand=item_brand)
+        own = await fetch_own_reviews(
+            s1,
+            user_id,
+            item_id,
+            K,
+            category=item_category,
+            brand=item_brand,
+            exclude_item_id=exclude_item_id,
+        )
     async with driver.session() as s2:
         others = await fetch_others_reviews(
             s2, user_id, item_id, user_locale, item_vec,
             user_query=user_query, item_name=item_name,
             item_brand=item_brand, item_category=item_category,
             item_price_bucket=item_price_bucket,
-            user_tendency=user_tendency, N=N,
+            user_tendency=user_tendency,
+            exclude_item_id=exclude_item_id,
+            N=N,
         )
     graph_data = _build_graph_data(user_id, target_id, own, others)
     graph_data["branch"] = _infer_retrieval_branch(others, item_id=item_id)

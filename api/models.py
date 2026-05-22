@@ -13,6 +13,8 @@ class SimulateRequest(BaseModel):
     price_usd: float | None = None   # Amazon / US listings
     item_category: str = ""      # optional hint when product not in KG
     item_brand: str = ""         # optional hint when product not in KG
+    item_features: list[str] = []
+    item_details: str | None = None
 
 
 class SimulateResponse(BaseModel):
@@ -111,3 +113,38 @@ class ErrorEvent(BaseModel):
 
 
 WsEvent = Union[StepEvent, TokenEvent, GraphDataEvent, FinalEvent, ErrorEvent]
+
+
+# ── Task B: Recommendation models ─────────────────────────────────────────────
+
+class RecommendRequest(BaseModel):
+    user_id: str
+    context_query: str
+    limit: int = 10
+
+
+class RecommendItem(BaseModel):
+    item_id: str
+    title: str
+    category: str | None = None
+    price_usd: float | None = None
+    price_ngn: float | None = None
+    avg_rating: float
+    rating_count: int
+    match_score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class RecommendResponse(BaseModel):
+    user_id: str
+    context_query: str
+    items: list[RecommendItem]
+    locale: str | None = None
+
+
+class RecommendFinalEvent(BaseModel):
+    type: Literal["recommend_final"]
+    user_id: str
+    context_query: str
+    items: list[dict]
+    locale: str | None = None

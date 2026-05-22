@@ -20,7 +20,7 @@ cd ui && bun install
 ### Environment variables
 Copy `.env.example` to `.env` in the project root and fill in:
 ```
-# LLM: gemini (default) | groq | cerebras
+# LLM: gemini (default) | groq | cerebras | mistral
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
 GEMINI_MODEL=gemini-2.5-flash
@@ -34,7 +34,13 @@ GEMINI_MODEL=gemini-2.5-flash
 # LLM_PROVIDER=cerebras
 # CEREBRAS_API_KEY=your_cerebras_key
 # CEREBRAS_MODEL=gpt-oss-120b
-# Optional override: LLM_MODEL=llama3.1-8b
+
+# For Mistral (OpenAI-compatible — https://docs.mistral.ai/api):
+# LLM_PROVIDER=mistral
+# MISTRAL_API_KEY=your_mistral_key
+# MISTRAL_MODEL=mistral-small-2506
+
+# Optional cross-provider override: LLM_MODEL=custom-model-id
 
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j

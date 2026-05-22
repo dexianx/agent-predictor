@@ -46,13 +46,21 @@ class EvalHoldoutCase:
     source: str
     split_reason: str
     restore_status: str
+    item_details: str = ""
 
     @property
     def label(self) -> str:
         return f"{self.source} · {self.category or 'unknown'} · {self.review_id[:12]}"
 
-    def to_simulate_request(self) -> SimulateRequest:
-        description = " ".join(self.item_description or self.item_features or [])
+    def to_simulate_request(self, product_input_mode: str = "legacy") -> SimulateRequest:
+        description = " ".join(self.item_description or [])
+        if product_input_mode == "legacy":
+            description = " ".join(self.item_description or self.item_features or [])
+        elif product_input_mode == "rich" and not description:
+            description = ""
+        elif product_input_mode != "minimal":
+            product_input_mode = "legacy"
+
         return SimulateRequest(
             user_id=self.user_id,
             item_id=self.item_id,
@@ -60,8 +68,10 @@ class EvalHoldoutCase:
             price_ngn=self.price_ngn or 0.0,
             price_usd=self.price_usd,
             item_description=description or None,
-            item_category=self.category,
-            item_brand=self.item_brand,
+            item_category=self.category if product_input_mode in {"legacy", "rich"} else "",
+            item_brand=self.item_brand if product_input_mode in {"legacy", "rich"} else "",
+            item_features=self.item_features if product_input_mode == "rich" else [],
+            item_details=self.item_details if product_input_mode == "rich" else None,
             heldout_review_id=self.review_id,
         )
 
@@ -449,6 +459,7 @@ def _sqlite_payload(split_name: str, row: dict[str, Any], created_at: str) -> di
 
 
 def _case_from_row(row: sqlite3.Row) -> EvalHoldoutCase:
+    neo4j_row = json.loads(row["neo4j_row_json"] or "{}")
     return EvalHoldoutCase(
         split_name=row["split_name"],
         review_id=row["review_id"],
@@ -471,6 +482,7 @@ def _case_from_row(row: sqlite3.Row) -> EvalHoldoutCase:
         item_rating_count=row["item_rating_count"],
         item_description=json.loads(row["item_description_json"] or "[]"),
         item_features=json.loads(row["item_features_json"] or "[]"),
+        item_details=neo4j_row.get("item_details_json") or "",
         seed=int(row["seed"] or 0),
         source=row["source"] or "",
         split_reason=row["split_reason"] or "",

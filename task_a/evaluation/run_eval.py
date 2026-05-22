@@ -51,6 +51,44 @@ async def _review_exists(review_id: str) -> bool:
         return bool(row and row["n"])
 
 
+async def _mask_target_item(item_id: str) -> bool:
+    """Temporarily remove the Item label so normal queries cannot see this product."""
+    if not item_id:
+        return False
+    driver = task_a.get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (i:Item {id: $item_id})
+            REMOVE i:Item
+            SET i._taskAHiddenItem = true
+            RETURN count(i) AS n
+            """,
+            item_id=item_id,
+        )
+        row = await result.single()
+        return bool(row and row["n"])
+
+
+async def _restore_target_item(item_id: str) -> bool:
+    if not item_id:
+        return False
+    driver = task_a.get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (i {id: $item_id})
+            WHERE i._taskAHiddenItem = true
+            SET i:Item
+            REMOVE i._taskAHiddenItem
+            RETURN count(i) AS n
+            """,
+            item_id=item_id,
+        )
+        row = await result.single()
+        return bool(row and row["n"])
+
+
 async def _run_holdout_case(
     case: EvalHoldoutCase,
     *,
@@ -67,12 +105,21 @@ async def _run_holdout_case(
         print(f"[SKIP] {case.label}: no persona in source {args.persona_source}")
         return None
 
-    result = await _simulate_case_with_timeout(
-        case.label,
-        case.to_simulate_request(),
-        stop_on_error=args.stop_on_error,
-        timeout_seconds=args.case_timeout_seconds,
-    )
+    masked_item = False
+    try:
+        if args.hide_target_item:
+            masked_item = await _mask_target_item(case.item_id)
+        result = await _simulate_case_with_timeout(
+            case.label,
+            case.to_simulate_request(args.product_input_mode),
+            stop_on_error=args.stop_on_error,
+            timeout_seconds=args.case_timeout_seconds,
+        )
+    finally:
+        if masked_item:
+            restored = await _restore_target_item(case.item_id)
+            if not restored:
+                print(f"[WARN] {case.label}: target item label was not restored ({case.item_id})")
     if result is None:
         return None
 
@@ -479,6 +526,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--case-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--stop-on-error", action="store_true")
+    parser.add_argument(
+        "--hide-target-item",
+        action="store_true",
+        help=(
+            "Simulate a new/unseen product by temporarily removing the target "
+            ":Item label in Neo4j for each case, then restoring it after the run. "
+            "The retrieval code path itself is left unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--product-input-mode",
+        choices=("legacy", "minimal", "rich"),
+        default="legacy",
+        help=(
+            "Product payload used for holdout simulation. minimal=title/description/price; "
+            "rich=title/brand/category/price/description/features/details; "
+            "legacy=previous eval behavior."
+        ),
+    )
     parser.add_argument("--neo4j-uri", default=os.getenv("NEO4J_URI", NEO4J_URI))
     parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", NEO4J_USER))
     parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", NEO4J_PASSWORD))

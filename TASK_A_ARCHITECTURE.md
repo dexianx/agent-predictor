@@ -1,6 +1,6 @@
 # Task A Architecture
 
-Date: 2026-05-22
+Date: 2026-05-22 (scores updated 2026-05-22)
 
 ## Current Status
 
@@ -127,22 +127,49 @@ ORDER BY item_similarity DESC, verified_purchase DESC, helpful_vote DESC
 LIMIT $raw_limit;
 ```
 
-Python then reranks with structured guards:
+Python then reranks with structured guards (`_item_vector_review_score` in `retrieval.py`):
 
 ```python
 final_retrieval_score = (
     0.45 * item_similarity
     + 0.20 * category_match
-    + 0.15 * price_bucket_match
+    + 0.05 * brand_match          # soft boost: target_brand in item.brand (case-insensitive substring)
+    + 0.10 * price_bucket_match   # was 0.15 before brand was added
     + 0.10 * locale_match
     + 0.05 * verified_purchase
     + 0.05 * helpful_vote_score
 )
 ```
 
+Brand is not used as a hard WHERE filter (no `i.brand` index in Neo4j — adding one would be the
+next step to allow hard filtering). Currently brand_match is a soft reranking boost that surfaces
+brand-matching neighbors within the cosine neighborhood without restricting the candidate set.
+
+`QUERY_CATEGORY_REVIEWS` also accepts a `$brand` parameter and adds `brand_w = 0.10` to the
+score formula when the item's brand matches, so brand preference percolates into the category
+structural tier as well.
+
 ## Latest Scores
 
-Both Pass 9 consistency runs used Cerebras with CatBoost removed/disabled.
+### Mistral medium-3-5 · 50 hidden cases · `task_a_v1` holdout (2026-05-22)
+
+All three runs use `mistral-medium-3-5`, 50 hidden cases, `--split-name task_a_v1`.
+
+| Run | Cases | Provider | Mode | RMSE | MAE | ROUGE-L | exact_item | item_vector |
+|---|---:|---|---|---:|---:|---:|---:|---:|
+| Known-item baseline | 50 | mistral-medium-3-5 | normal | 0.7746 | 0.4400 | 0.1275 | 40 | 10 |
+| Masked · minimal input | 50 | mistral-medium-3-5 | `--hide-target-item` | 1.0296 | 0.7000 | 0.1299 | 0 | 50 |
+| Masked · rich input | 50 | mistral-medium-3-5 | `--hide-target-item` | **0.9899** | **0.6600** | 0.1272 | 0 | 50 |
+
+**Rich input fields:** title + brand + category + price + description + features + details  
+**Minimal input fields:** title + description + price
+
+Key observations:
+- Rich input improved 11 cases, worsened 10, left 29 unchanged (+2 exact hits: 23→25).
+- When the target item is masked, all 50 cases fall into `item_vector` branch — no `exact_item` hits. This is the honest cold-start stress test.
+- The gap between known-item (RMSE 0.7746) and unseen-product masked (RMSE 0.9899) shows the system still depends heavily on exact-item community reviews. Cold-product reasoning from metadata + similar-item reviews is the key next improvement.
+
+### Pass 9 · Cerebras · 60 cases (previous best)
 
 | Run | Cases | Offset | Provider | RMSE | MAE | ROUGE-L Max | ROUGE-L Mean | exact_item | item_vector |
 |---|---:|---:|---|---:|---:|---:|---:|---:|---:|
@@ -150,7 +177,7 @@ Both Pass 9 consistency runs used Cerebras with CatBoost removed/disabled.
 | Pass 9 offset 30 | 30 | 30 | Cerebras | 1.0801 | 0.8333 | 0.1501 | 0.1220 | 26 | 4 |
 | Combined Pass 9 | 60 | 0-59 | Cerebras | 0.9832 | 0.6667 | n/a | n/a | 49 | 11 |
 
-The first 30-case run was a kinder slice. The second slice exposed more hidden low/medium ratings where the current system over-predicts positivity. The more honest working estimate is therefore about `0.98 RMSE / 0.67 MAE` over these 60 cases.
+The more honest working estimate is `0.98–1.03 RMSE / 0.66–0.70 MAE` on 50-case masked runs (cold-start), and `0.77 RMSE / 0.44 MAE` when exact-item graph evidence is available.
 
 ## Reproducibility
 
@@ -167,7 +194,48 @@ Backfill item embeddings when the Neo4j graph exists:
 PYTHONPATH=. .venv/bin/python -m scripts.backfill_item_embeddings
 ```
 
-Run the current Task A eval:
+Run the standard eval (known-item, exact community evidence available):
+
+```bash
+PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=mistral \
+.venv/bin/python -m task_a.evaluation.run_eval \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --max-cases 50 \
+  --skip-bertscore \
+  --output-dir task_a/evaluation/output/mistral_medium_50_known_item
+```
+
+Run the masked eval (cold-start / unseen-product stress test — recommended for honest benchmarking):
+
+```bash
+# Minimal input (title + description + price only)
+PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=mistral \
+.venv/bin/python -m task_a.evaluation.run_eval \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --max-cases 50 \
+  --skip-bertscore \
+  --hide-target-item \
+  --output-dir task_a/evaluation/output/mistral_medium_50_masked_minimal_input
+
+# Rich input (title + brand + category + description + features + details + price)
+PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=mistral \
+.venv/bin/python -m task_a.evaluation.run_eval \
+  --sqlite-path personas.db \
+  --split-name task_a_v1 \
+  --max-cases 50 \
+  --skip-bertscore \
+  --hide-target-item \
+  --rich-input \
+  --output-dir task_a/evaluation/output/mistral_medium_50_masked_rich_input
+```
+
+`--hide-target-item` temporarily removes only the `:Item` label from the target product node in Neo4j
+for each eval case (restored in `finally`). Exact-item lookup/stats cannot see the product, but
+item-vector retrieval, category fallback, prompt flow, and rating flow still operate normally.
+
+Run a Cerebras slice (legacy):
 
 ```bash
 PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
@@ -179,23 +247,30 @@ PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
   --output-dir task_a/evaluation/output/task_a_v1_pass9_recheck
 ```
 
-Run a different slice:
-
-```bash
-PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
-.venv/bin/python -m task_a.evaluation.run_eval \
-  --sqlite-path personas.db \
-  --split-name task_a_v1 \
-  --max-cases 30 \
-  --offset 30 \
-  --skip-bertscore \
-  --output-dir task_a/evaluation/output/task_a_v1_pass9_offset30
-```
-
 ## Current Recommendation
 
-Keep the active architecture focused on retrieval quality and rating calibration. The next likely gains are:
+The masked 50-case eval is now the canonical benchmark. It tests the realistic scenario: a product
+not yet in the knowledge graph, submitted via the UI with whatever metadata the user provides.
 
+**Immediate next steps:**
+
+1. **Accept richer product input in the UI** — adding brand, category, features, and technical
+   details to the request improves masked RMSE from 1.0296 → 0.9899 (–0.04) and exact hits from
+   23→25 (+2). Category/brand tighten item-vector retrieval; features/details expose material,
+   compatibility, and certification signals. The three required fields (title, price, description)
+   stay required; brand + category are strongly recommended; features + details are optional/advanced.
+
+2. **Improve cold-product reasoning** — the masked eval gap (RMSE 0.77 known → 0.99 masked) shows
+   the system still depends heavily on exact-item community evidence. The next real gains come from:
+   - stronger item-vector reranking using brand + category metadata hints
+   - rating-bucket-diverse item-vector retrieval (avoid all-positive similar-item reviews)
+   - better handling of unseen products where community evidence is sparse or unavailable
+
+3. **Retrieval-level fixes remain the priority** — prompt-level caveat suppression (Passes 9–14)
+   consistently failed. The root cause is retrieval bias (all-positive community evidence for
+   low-quality products). Fix the retrieval before revisiting prompt rules.
+
+**Other likely gains (unchanged from before):**
 - stronger negative/neutral evidence sampling for exact-item reviews
 - item-vector review diversity by rating bucket
 - stricter guardrails when exact-item public evidence is positive but the hidden user may be critical

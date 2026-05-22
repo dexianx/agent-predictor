@@ -1,6 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Bot, ChevronDown } from "lucide-react";
+import { ToolCallCard } from "./ToolCallCard";
+import type { AnyStep, ToolCallStep } from "@/lib/types";
 
 export type AgentStepData = {
   id: string;
@@ -9,7 +11,7 @@ export type AgentStepData = {
 };
 
 type Props = {
-  steps: AgentStepData[];
+  steps: AnyStep[];
   running: boolean;
   streamingText?: boolean;
   /**
@@ -148,6 +150,22 @@ export function AgentSteps({ steps, running, streamingText, expandable }: Props)
           {steps.map((s, i) => {
             const done = i < activeIndex;
             const active = i === activeIndex && running && !streamingText;
+
+            // Tool call steps render as a self-contained card
+            if (s.kind === "tool_call") {
+              return (
+                <motion.li
+                  key={s.id + i}
+                  ref={(el) => { rowRefs.current[i] = el; }}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.4, ease: EASE, delay: i * 0.03 }}
+                >
+                  <ToolCallCard step={s as ToolCallStep} />
+                </motion.li>
+              );
+            }
+
             const extra = expandable?.[s.id];
             const open = !!extra && isOpen(i, s.id);
             return (
@@ -185,9 +203,9 @@ export function AgentSteps({ steps, running, streamingText, expandable }: Props)
                         s.label
                       )}
                     </span>
-                    {s.detail && (
+                    {(s as AgentStepData).detail && (
                       <span className="text-muted-foreground text-[13px] truncate">
-                        {s.detail}
+                        {(s as AgentStepData).detail}
                       </span>
                     )}
                     {extra && (

@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Search as SearchIcon } from "lucide-react";
 import koraMark from "@/assets/kora-mark.png";
 import { useThreads, createThread, deleteThread, setPersona } from "@/hooks/useThreads";
+import { useRecThreads, createRecThread, deleteRecThread, setRecPersona } from "@/hooks/useRecThreads";
 import { getFeaturedPersonas } from "@/lib/api";
 import type { PersonaDetail } from "@/lib/types";
 import { getPersonaDisplayName, getPersonaShortId } from "@/lib/persona-utils";
@@ -16,9 +17,16 @@ type Props = {
 
 export function SidebarContent({ onClose }: Props) {
   const threads = useThreads();
+  const recThreads = useRecThreads();
   const navigate = useNavigate();
   const params = useParams({ strict: false }) as { threadId?: string };
+  const routerState = useRouterState();
+  const isRecommendMode = routerState.location.pathname.startsWith("/r/");
+
   const activeId = params.threadId;
+  const activeThread = isRecommendMode
+    ? recThreads.find((t) => t.id === activeId)
+    : threads.find((t) => t.id === activeId);
 
   const [featured, setFeatured] = useState<PersonaDetail[]>([]);
   const [pinned, setPinned] = useState<PersonaDetail[]>([]);
@@ -37,25 +45,44 @@ export function SidebarContent({ onClose }: Props) {
   ];
 
   const newChat = () => {
-    const t = createThread(threads.find((x) => x.id === activeId)?.personaId);
-    navigate({ to: "/c/$threadId", params: { threadId: t.id } });
+    if (isRecommendMode) {
+      const t = createRecThread(activeThread?.personaId);
+      navigate({ to: "/r/$threadId", params: { threadId: t.id } });
+    } else {
+      const t = createThread(activeThread?.personaId);
+      navigate({ to: "/c/$threadId", params: { threadId: t.id } });
+    }
     onClose?.();
   };
 
   const onDelete = (id: string) => {
-    deleteThread(id);
-    if (id === activeId) {
-      const remaining = threads.filter((t) => t.id !== id);
-      if (remaining.length > 0) {
-        navigate({ to: "/c/$threadId", params: { threadId: remaining[0].id } });
-      } else {
-        const t = createThread();
-        navigate({ to: "/c/$threadId", params: { threadId: t.id } });
+    if (isRecommendMode) {
+      deleteRecThread(id);
+      if (id === activeId) {
+        const remaining = recThreads.filter((t) => t.id !== id);
+        if (remaining.length > 0) {
+          navigate({ to: "/r/$threadId", params: { threadId: remaining[0].id } });
+        } else {
+          const t = createRecThread();
+          navigate({ to: "/r/$threadId", params: { threadId: t.id } });
+        }
+      }
+    } else {
+      deleteThread(id);
+      if (id === activeId) {
+        const remaining = threads.filter((t) => t.id !== id);
+        if (remaining.length > 0) {
+          navigate({ to: "/c/$threadId", params: { threadId: remaining[0].id } });
+        } else {
+          const t = createThread();
+          navigate({ to: "/c/$threadId", params: { threadId: t.id } });
+        }
       }
     }
   };
 
-  const activeThread = threads.find((t) => t.id === activeId);
+  const displayThreads = isRecommendMode ? recThreads : threads;
+  const threadRoute = isRecommendMode ? "/r/$threadId" : "/c/$threadId";
 
   return (
     <>
@@ -112,7 +139,11 @@ export function SidebarContent({ onClose }: Props) {
             return (
               <div key={p.user_id} className="group flex items-center gap-1 px-1 py-1.5 rounded-lg hover:bg-sand transition-colors cursor-pointer">
                 <button
-                  onClick={() => activeThread && setPersona(activeThread.id, p.user_id)}
+                  onClick={() => {
+                    if (!activeThread) return;
+                    if (isRecommendMode) setRecPersona(activeThread.id, p.user_id);
+                    else setPersona(activeThread.id, p.user_id);
+                  }}
                   className="flex-1 text-left min-w-0"
                 >
                   <span className={`text-[12.5px] font-medium leading-tight block truncate ${active ? "text-primary" : "text-foreground/85"}`}>
@@ -134,11 +165,11 @@ export function SidebarContent({ onClose }: Props) {
 
         {/* Chats section */}
         <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-          Chats
+          {isRecommendMode ? "Recommendations" : "Chats"}
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-3 kora-scroll">
           <AnimatePresence initial={false}>
-            {threads.map((t) => {
+            {displayThreads.map((t) => {
               const active = t.id === activeId;
               return (
                 <motion.div
@@ -150,7 +181,7 @@ export function SidebarContent({ onClose }: Props) {
                   className="group relative flex items-center"
                 >
                   <Link
-                    to="/c/$threadId"
+                    to={threadRoute as "/c/$threadId" | "/r/$threadId"}
                     params={{ threadId: t.id }}
                     onClick={onClose}
                     className={`flex-1 min-w-0 flex items-center pl-2.5 pr-7 py-2 rounded-md text-sm transition-all ${
@@ -159,11 +190,11 @@ export function SidebarContent({ onClose }: Props) {
                         : "text-ink-soft hover:bg-sand"
                     }`}
                   >
-                    <span className="truncate">{t.title || "New chat"}</span>
+                    <span className="truncate">{t.title || (isRecommendMode ? "New recommendation" : "New chat")}</span>
                   </Link>
                   <button
                     onClick={() => onDelete(t.id)}
-                    aria-label="Delete chat"
+                    aria-label="Delete"
                     className="absolute right-1.5 grid place-items-center size-7 rounded-md text-[11px] text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all font-medium"
                   >
                     ✕

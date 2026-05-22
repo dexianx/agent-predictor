@@ -3,6 +3,7 @@ ICL prompt assembly — 5-block pipeline:
   A: Persona profile   B: Style exemplars   C: Content grounding
   D: Item metadata     E: Cultural voice overlay (NG only)
 """
+import json
 
 # ── Aspect risk extraction (Pass 7) ──────────────────────────────────────────
 
@@ -503,8 +504,24 @@ def build_user_prompt(
         formatted = f"{currency}{price:,.0f}" if isinstance(price, (int, float)) else f"{currency}{price}"
         price_section = f"\nPrice: {formatted}"
 
+    details_parts: list[str] = []
     desc = (item_meta.get("item_description") or "").strip()
-    desc_section = f"\nProduct details: {desc[:300]}" if desc else ""
+    if desc:
+        details_parts.append(f"Description: {desc[:500]}")
+    features = item_meta.get("features") or []
+    if isinstance(features, str):
+        features = [features]
+    feature_text = "; ".join(str(feature).strip() for feature in features if str(feature).strip())
+    if feature_text:
+        details_parts.append(f"Features: {feature_text[:700]}")
+    details = item_meta.get("details")
+    if isinstance(details, dict):
+        detail_text = json.dumps(details, ensure_ascii=False)
+    else:
+        detail_text = str(details or "").strip()
+    if detail_text and detail_text not in {"{}", "[]"}:
+        details_parts.append(f"Details: {detail_text[:700]}")
+    product_details_text = "\n".join(details_parts)
 
     avg_rating = item_meta.get("avg_rating")
     review_count = item_meta.get("review_count") or 0
@@ -604,7 +621,7 @@ CRITICAL CONSISTENCY RULE:
 The review must sound like someone who genuinely gave {predicted_rating} stars.{nigerian_block}
 
 PRODUCT DETAILS FROM REQUEST:
-{desc_section.replace(chr(10) + "Product details: ", "") if desc_section else "none provided"}
+{product_details_text if product_details_text else "none provided"}
 
 OUTPUT:
 Write only the review text. Do not include the numeric rating, headings, bullets, or quotes."""

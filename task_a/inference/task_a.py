@@ -79,6 +79,8 @@ class SimulateRequest:
     # can still scope to related items (e.g. eval fixtures, API callers).
     item_category: str = ""
     item_brand: str = ""
+    item_features: list[str] = field(default_factory=list)
+    item_details: str | dict | None = None
     heldout_review_id: str = ""
 
 
@@ -175,9 +177,9 @@ async def simulate_review(
             "subCategory": item_meta.get("sub_category"),
             "priceNgn": request.price_ngn or item_meta.get("price_ngn"),
             "priceUsd": request.price_usd if request.price_usd is not None else item_meta.get("price_usd"),
-            "features": item_meta.get("features"),
+            "features": request.item_features or item_meta.get("features"),
             "description": request.item_description or item_meta.get("item_description"),
-            "details": item_meta.get("details"),
+            "details": request.item_details or item_meta.get("details"),
             "boughtTogetherCount": item_meta.get("boughtTogetherCount"),
             "avgRating": item_meta.get("avg_rating"),
             "ratingCount": item_meta.get("review_count"),
@@ -202,6 +204,7 @@ async def simulate_review(
             request.price_ngn or item_meta.get("price_ngn"),
         ),
         user_tendency=user_tendency,
+        exclude_item_id=request.item_id or resolved_item_id or "",
         K=3, N=5,
     )
     item_rating_stats = await fetch_item_rating_stats(
@@ -228,6 +231,14 @@ async def simulate_review(
         item_meta["price_ngn"] = request.price_ngn
     if request.item_description:
         item_meta["item_description"] = request.item_description
+    if request.item_brand:
+        item_meta["brand"] = request.item_brand
+    if request.item_category:
+        item_meta["category"] = request.item_category
+    if request.item_features:
+        item_meta["features"] = request.item_features
+    if request.item_details:
+        item_meta["details"] = request.item_details
     item_meta["item_rating_stats"] = item_rating_stats
     branch = graph_data.get("branch") or branch
     graph_data["branch"] = branch

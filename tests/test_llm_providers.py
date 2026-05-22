@@ -9,6 +9,7 @@ import task_a.inference.llm_client as llm
         ("gemini", "GEMINI_MODEL", "Gemini", "gemini-2.5-flash"),
         ("groq", "GROQ_MODEL", "Groq", "llama-3.3-70b-versatile"),
         ("cerebras", "CEREBRAS_MODEL", "Cerebras", "gpt-oss-120b"),
+        ("mistral", "MISTRAL_MODEL", "Mistral", "mistral-small-2506"),
     ],
 )
 def test_llm_display_name_per_provider(monkeypatch, provider, model_env, expected_label, expected_model):
@@ -26,6 +27,24 @@ def test_cerebras_openai_compat_base_url(monkeypatch):
     cfg = llm._openai_compat_config()
     assert cfg["base_url"] == "https://api.cerebras.ai/v1"
     assert cfg["api_key_env"] == "CEREBRAS_API_KEY"
+
+
+def test_mistral_openai_compat_config(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "mistral")
+    monkeypatch.setenv("MISTRAL_MODEL", "mistral-medium-latest")
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "mistral", raising=False)
+    cfg = llm._openai_compat_config()
+    assert cfg["base_url"] == "https://api.mistral.ai/v1"
+    assert cfg["api_key_env"] == "MISTRAL_API_KEY"
+    assert llm.active_model() == "mistral-medium-latest"
+
+
+def test_llm_model_override_beats_provider_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "mistral")
+    monkeypatch.setenv("MISTRAL_MODEL", "mistral-small-2506")
+    monkeypatch.setenv("LLM_MODEL", "custom-model-id")
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "mistral", raising=False)
+    assert llm.active_model() == "custom-model-id"
 
 
 def test_unknown_provider_raises(monkeypatch):

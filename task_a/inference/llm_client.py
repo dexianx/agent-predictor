@@ -47,25 +47,30 @@ def _uses_openai_compat() -> bool:
     return LLM_PROVIDER in _OPENAI_COMPAT_PROVIDERS
 
 
+def _env_model(name: str, fallback: str) -> str:
+    value = os.environ.get(name, fallback).strip()
+    return value or fallback
+
+
 def _openai_compat_config() -> dict[str, str]:
     if LLM_PROVIDER == "cerebras":
         return {
-            "base_url": CEREBRAS_BASE_URL,
+            "base_url": os.environ.get("CEREBRAS_BASE_URL", CEREBRAS_BASE_URL).strip() or CEREBRAS_BASE_URL,
             "api_key_env": "CEREBRAS_API_KEY",
-            "default_model": CEREBRAS_MODEL,
+            "default_model": _env_model("CEREBRAS_MODEL", CEREBRAS_MODEL),
             "label": "Cerebras",
         }
     if LLM_PROVIDER == "mistral":
         return {
-            "base_url": MISTRAL_BASE_URL,
+            "base_url": os.environ.get("MISTRAL_BASE_URL", MISTRAL_BASE_URL).strip() or MISTRAL_BASE_URL,
             "api_key_env": "MISTRAL_API_KEY",
-            "default_model": MISTRAL_MODEL,
+            "default_model": _env_model("MISTRAL_MODEL", MISTRAL_MODEL),
             "label": "Mistral",
         }
     return {
-        "base_url": GROQ_BASE_URL,
+        "base_url": os.environ.get("GROQ_BASE_URL", GROQ_BASE_URL).strip() or GROQ_BASE_URL,
         "api_key_env": "GROQ_API_KEY",
-        "default_model": GROQ_MODEL,
+        "default_model": _env_model("GROQ_MODEL", GROQ_MODEL),
         "label": "Groq",
     }
 
@@ -83,7 +88,7 @@ def active_model() -> str:
         return override
     if _uses_openai_compat():
         return _openai_compat_config()["default_model"]
-    return GEMINI_MODEL
+    return _env_model("GEMINI_MODEL", GEMINI_MODEL)
 
 
 def get_gemini_client() -> genai.Client:

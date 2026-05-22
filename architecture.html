@@ -162,14 +162,14 @@ flowchart TB
 
     subgraph REQ_BOX["WebSocket Request  (fields marked ★ are required)"]
         direction LR
-        REQ["user_id ★ · item_name ★ · price_ngn ★\nitem_description ?  ·  raw_message ?"]
+        REQ["user_id ★ · item_name ★ · price_ngn ★\nitem_description ?  ·  item_brand ?  ·  item_category ?\nitem_features[] ?  ·  item_details ?  ·  raw_message ?"]
     end
 
     subgraph STEPS["FastAPI  /ws/simulate  →  simulate_review()  —  inference/task_a.py"]
         direction TB
         S1["① persona_load\nSQLite point-read by user_id"]
         S2["② item_resolve  ·  metadata only\ntitle CONTAINS match  →  category + brand  →  dict fallback\n(does not set retrieval branch)"]
-        S3["③ retrieval  ·  2 independent sessions  ·  branch from category availability\nown reviews K=3   others reviews N=5\n★ authoritative override applied last\n   title = request.item_name\n   price  = request.price_ngn"]
+        S3["③ retrieval  ·  2 independent sessions  ·  branch from category availability\nown reviews K=3   others reviews N=5\n★ authoritative override applied last\n   title = request.item_name   price = request.price_ngn\n   brand = request.item_brand  category = request.item_category\n   embedding text includes: name + brand + category + features + details"]
         S4["④ prompt_build\nderive_signals  ·  cultural voice block  ·  format exemplars\nassemble 5-block ICL  ·  system + user prompt"]
         S5["⑤ llm_review  —  Call 1\ncall_review_stream(system, user)\nstreaming tokens → review text"]
         S6["⑥ llm_rating  —  Call 2\ncall_rating(review_text + rating_profile)\nstructured integer 1–5"]
@@ -225,7 +225,7 @@ flowchart TB
 
 <div class="mermaid">
 flowchart TD
-    START(["Request fields\nitem_name · price_ngn · raw_message? · item_description?"])
+    START(["Request fields\nitem_name ★ · price_ngn ★ · item_description ?\nitem_brand ? · item_category ? · item_features[] ? · item_details ? · raw_message ?"])
 
     %% ════════════════════════════════════════════════
     %% STEP 2  —  ITEM METADATA RESOLUTION  (no branch assignment)
@@ -255,7 +255,7 @@ flowchart TD
     BRANCH_V   --> EMB1
 
     EMB1{"embed_text\nnon-empty?"}
-    EMB1 -- "yes" --> EMB2["MiniLM-L6-v2\nencode(item_name + ' ' + item_category)\n→ item_vec  384-dim float list\nNote: name+category only — avoids\nspec-text / review-text domain mismatch"]
+    EMB1 -- "yes" --> EMB2["MiniLM-L6-v2\nencode(item_name + brand + category + features + details)\n→ item_vec  384-dim float list\nRich fields tighten KNN neighborhood:\nbrand+category constrain item-vector scope;\nfeatures+details add material/compatibility signals"]
     EMB2 --> S1_OWN
     EMB1 -- "no" --> S1_OWN
 
@@ -279,7 +279,7 @@ flowchart TD
     %% ── TIER 1: CATEGORY STRUCTURAL ─────────────────
     S2_START --> T1_1{"item_category\nknown?"}
 
-    T1_1 -- "yes" --> T1_2["QUERY_CATEGORY_REVIEWS  —  primary path\nMATCH (i:Item)-[:IN_CATEGORY]->(cat:Category)\nWHERE cat.name CONTAINS category\n   OR i.category CONTAINS category\nMATCH (r:Review)-[:ABOUT]->(i)\nMATCH (other:User)-[:WROTE]->(r) WHERE other.id <> user_id\nscore = locale_w × 0.6 + recency_decay × 0.4\n  locale_w = 1.0 if r.locale = user_locale else 0.3\n  recency_decay = 1÷(1+age÷12)\nORDER BY score DESC  LIMIT N=5\nfields: text · rating · locale · item_name · category · score"]
+    T1_1 -- "yes" --> T1_2["QUERY_CATEGORY_REVIEWS  —  primary path\nMATCH (i:Item)-[:IN_CATEGORY]->(cat:Category)\nWHERE cat.name CONTAINS category\n   OR i.category CONTAINS category\nMATCH (r:Review)-[:ABOUT]->(i)\nMATCH (other:User)-[:WROTE]->(r) WHERE other.id <> user_id\nscore = locale_w × 0.6 + recency_decay × 0.4 + brand_w\n  locale_w = 1.0 if r.locale = user_locale else 0.3\n  recency_decay = 1÷(1+age÷12)\n  brand_w = 0.10 if i.brand CONTAINS brand else 0.0\nORDER BY score DESC  LIMIT N=5\nfields: text · rating · locale · item_name · category · score"]
     T1_2 --> T1_3{"rows ≥ 1?"}
     T1_3 -- "yes" --> OTHERS_DONE
     T1_3 -- "empty" --> T2_1
@@ -298,7 +298,7 @@ flowchart TD
 
     %% ── TIER 3: QUERY_VECTOR ────────────────────────
     T3_1{"item_vec\navailable?"}
-    T3_1 -- "yes" --> T3_2["QUERY_VECTOR  —  384-dim cosine similarity\nCALL db.index.vector.queryNodes\n     ('review_embedding', 15, $item_vec)\nYIELD node AS r, score AS similarity\nWHERE similarity > 0.72\nMATCH (r)<-[:WROTE]-(other:User)\nWHERE other.locale = $user_locale  ← hard locale filter\nMATCH (r)-[:ABOUT]->(i:Item)-[:IN_CATEGORY]->(cat)\nORDER BY locale_match DESC, similarity DESC\nLIMIT N=5\n⚠ Hard locale filter: returns [] if no same-locale\n  users exist in this cosine neighborhood\nNote: embedding is item_name+category — not spec text"]
+    T3_1 -- "yes" --> T3_2["QUERY_VECTOR  —  384-dim cosine similarity\nCALL db.index.vector.queryNodes\n     ('review_embedding', 15, $item_vec)\nYIELD node AS r, score AS similarity\nWHERE similarity > 0.72\nMATCH (r)<-[:WROTE]-(other:User)\nWHERE other.locale = $user_locale  ← hard locale filter\nMATCH (r)-[:ABOUT]->(i:Item)-[:IN_CATEGORY]->(cat)\nORDER BY locale_match DESC, similarity DESC\nLIMIT N=5\n⚠ Hard locale filter: returns [] if no same-locale\n  users exist in this cosine neighborhood\nembedding = name+brand+category+features+details (rich fields narrow KNN neighborhood)"]
     T3_2 --> OTHERS_DONE
     T3_1 -- "no" --> T3_3(["others_reviews = []"])
     T3_3 --> OTHERS_DONE
@@ -308,7 +308,7 @@ flowchart TD
     %% ════════════════════════════════════════════════
     OTHERS_DONE(["others_reviews  ≤ 5 rows"])
     OTHERS_DONE --> POST1["Backfill (always)\n  if category missing → others[0].category\n  avg_rating  = mean(others[].rating)\n  review_count = len(others)"]
-    POST1 --> OVERRIDE["★  AUTHORITATIVE OVERRIDE  —  always runs last\nitem_meta.title            = request.item_name\nitem_meta.price_ngn        = request.price_ngn\nitem_meta.item_description = request.item_description  (if provided)\nGuarantees: caller's data wins over all graph / backfill values"]
+    POST1 --> OVERRIDE["★  AUTHORITATIVE OVERRIDE  —  always runs last\nitem_meta.title            = request.item_name\nitem_meta.price_ngn        = request.price_ngn\nitem_meta.brand            = request.item_brand     (if provided)\nitem_meta.category         = request.item_category  (if provided)\nitem_meta.item_description = request.item_description  (if provided)\nitem_meta.features         = request.item_features  (if provided)\nitem_meta.details          = request.item_details   (if provided)\nGuarantees: caller's data wins over all graph / backfill values"]
     OVERRIDE --> END(["→  Step 4: prompt_build\nown_reviews + others_reviews + item_meta → ICL prompt"])
 </div>
 
@@ -456,7 +456,7 @@ sequenceDiagram
     participant EMB as MiniLM-L6-v2
     participant LLM as Gemini / Groq
 
-    UI->>API: WS connect → JSON {user_id*, item_name*, price_ngn*, item_description?, raw_message?}
+    UI->>API: WS connect → JSON {user_id*, item_name*, price_ngn*, item_description?, item_brand?, item_category?, item_features[]?, item_details?, raw_message?}
     API->>ORCH: simulate_review(req, emit)
 
     Note over ORCH: Step 1 — persona_load
@@ -476,7 +476,7 @@ sequenceDiagram
     Note right of ORCH: item_category = item_meta.category<br/>item_brand = item_meta.brand<br/>branch = "category" / "query" / "vector"
 
     Note over ORCH: Step 3 — retrieval (2 independent sessions)
-    ORCH->>EMB: encode(item_name + ' ' + item_category)<br/>name+category only — avoids spec-text domain mismatch
+    ORCH->>EMB: encode(item_name + brand + category + features + details)<br/>rich fields tighten KNN neighborhood and improve item-vector recall
     EMB-->>ORCH: 384-dim item_vec (used as vector fallback)
     par Session 1 — style anchors (own reviews)
         alt category known
@@ -487,7 +487,7 @@ sequenceDiagram
         N4J-->>ORCH: own_reviews[≤3]: text, rating, item_name, category, age_months
     and Session 2 — content anchors (others' reviews — 3-tier chain)
         alt Tier 1: category known
-            ORCH->>N4J: QUERY_CATEGORY_REVIEWS(category, user_locale, N=5)<br/>locale+recency scored — no item_id needed
+            ORCH->>N4J: QUERY_CATEGORY_REVIEWS(category, brand, user_locale, N=5)<br/>locale+recency+brand scored — no item_id needed
         end
         alt Tier 2: category empty OR Tier 1 returned 0 rows
             ORCH->>LLM: call_generate_cypher(schema + item_name + brand + category)
@@ -501,7 +501,7 @@ sequenceDiagram
     end
 
     Note over ORCH: Backfill: category from others[0] if still missing<br/>avg_rating = mean(others[].rating)
-    Note over ORCH: ★ AUTHORITATIVE OVERRIDE (always last)<br/>item_meta.title = request.item_name<br/>item_meta.price_ngn = request.price_ngn<br/>item_meta.item_description = request.item_description
+    Note over ORCH: ★ AUTHORITATIVE OVERRIDE (always last)<br/>item_meta.title = request.item_name<br/>item_meta.price_ngn = request.price_ngn<br/>item_meta.brand = request.item_brand (if provided)<br/>item_meta.category = request.item_category (if provided)<br/>item_meta.item_description = request.item_description<br/>item_meta.features = request.item_features<br/>item_meta.details = request.item_details
 
     ORCH->>ORCH: _build_graph_data(user, item, own, others)<br/>→ nodes[user,item,reviews,categories] + edges[WROTE,ABOUT,IN_CATEGORY]
     ORCH-->>UI: {type:"graph_data", branch, nodes[], edges[]}
@@ -556,18 +556,20 @@ QUERY_OWN_RECENT  -- fallback when no category resolved: any category, most rece
   WHERE cat.name CONTAINS $category OR i.category CONTAINS $category
   MATCH (r:Review)-[:ABOUT]->(i), (other:User)-[:WROTE]->(r)
   WHERE other.id &lt;&gt; $user_id
-  score = locale_w × 0.6 + recency_decay × 0.4
+  score = locale_w × 0.6 + recency_decay × 0.4 + brand_w
     locale_w = 1.0 if r.locale = user_locale else 0.3
     recency_decay = 1÷(1+age÷12)
+    brand_w = 0.10 if $brand &lt;&gt; "" AND toLower(i.brand) CONTAINS toLower($brand) else 0.0
   ORDER BY score DESC  LIMIT N=5
   -- no item_id needed; uses indexed item_category field for performance
 
 QUERY_VECTOR  (Tier 3 — last resort):
-  embed_text = item_name + ' ' + item_category   ← name+category only
+  embed_text = item_name + brand + category + features_snippet + details_snippet
+               ← rich fields tighten KNN neighborhood;
+                 features/details add material, compatibility, certification signals
   CALL db.index.vector.queryNodes('review_embedding', 15, $item_vec)
   WHERE similarity &gt; 0.72
-  ORDER BY locale_match DESC, similarity DESC  LIMIT N=5
-  Note: embedding only name+category avoids spec-text/review-text vocabulary mismatch</pre>
+  ORDER BY locale_match DESC, similarity DESC  LIMIT N=5</pre>
 
 <h3>7.3 LLM Cypher generation (Tier 2 fallback)</h3>
 <p><code>generate_retrieval_query(user_query, user_locale, item_name, item_brand, item_category)</code> now receives <strong>structured product fields</strong> as separate prompt variables (not a freeform blob). The LLM injects the full graph schema plus explicit brand and category anchors to write targeted Cypher. Fires only when <code>QUERY_CATEGORY_REVIEWS</code> returns 0 rows (category not in graph or too narrow). Falls through to <code>QUERY_VECTOR</code> on Cypher error or empty result.</p>
@@ -727,12 +729,25 @@ Write the review now:</pre>
 
 <h3>10.2 Request schema</h3>
 <pre>SimulateRequest {
-  user_id:          string   REQUIRED  -- persona lookup key
-  item_name:        string   REQUIRED  -- product name; always wins over graph title
-  price_ngn:        float    REQUIRED  -- price in caller's currency; always wins over graph price
-  item_description: string?  optional  -- surfaced in "Product details:" prompt field
-  raw_message:      string?  optional  -- natural language → LLM Cypher retrieval branch
+  user_id:          string    REQUIRED  -- persona lookup key
+  item_name:        string    REQUIRED  -- product name; always wins over graph title
+  price_ngn:        float     REQUIRED  -- price in caller's currency; always wins over graph price
+  item_description: string?   optional  -- surfaced in "Product details:" prompt field
+  item_brand:       string?   optional  -- tightens item-vector KNN scope; included in embedding text
+  item_category:    string?   optional  -- primary retrieval anchor; scopes QUERY_CATEGORY_REVIEWS
+  item_features:    string[]? optional  -- bullet features; injected into item metadata + embedding
+  item_details:     string?   optional  -- technical specs; injected into item metadata + embedding
+  raw_message:      string?   optional  -- natural language → LLM Cypher retrieval branch
 }</pre>
+<div class="callout">
+  <h4>Rich input impact (50-case masked eval · mistral-medium-3-5)</h4>
+  <p>Adding brand + category + features + details to a masked (cold-start) run improved RMSE from
+  <strong>1.0296 → 0.9899</strong> (−0.040) and exact hits from 23→25 (+2/50). Rich input improved
+  11 cases, worsened 10, left 29 unchanged. Category/brand narrow the item-vector retrieval
+  neighborhood; features/details expose material, compatibility, and certification signals.
+  The remaining gap to known-item (RMSE 0.7746) requires retrieval-level improvements, not more
+  input fields.</p>
+</div>
 
 <h3>10.3 WebSocket events (server → client)</h3>
 <table>
@@ -764,12 +779,22 @@ Write the review now:</pre>
 │   │   └── NodeDetailsPanel   ← position:absolute overlay (prevents canvas reflow on open)
 │   │                            shows id · type · label · text · score · age
 │   └── ReviewCard             — streamed text + final star rating
-└── Composer                   — 3-field form: item_name* · item_description* · price*
-                                 All three required; send button disabled until all filled.
+└── Composer                   — required: item_name* · item_description* · price*
+                                 expandable "More details": brand · category (strongly recommended)
+                                                            features (one per line) · tech details
+                                 Send button disabled until 3 required fields are filled.
                                  Price shown with currency symbol from persona locale ($ or ₦)</pre>
 
 <h3>11.1 Form validation</h3>
-<p>The Composer validates three fields before enabling the send button. <code>ProductFields.price_ngn</code> is typed as <code>number</code> (not nullable). The WebSocket request type in <code>ws.ts</code> marks <code>item_name</code> and <code>price_ngn</code> as required, matching the FastAPI Pydantic model. This prevents sending an incomplete request that would produce a degraded generation.</p>
+<p>The Composer validates three required fields before enabling the send button:
+<code>item_name</code>, <code>item_description</code>, <code>price_ngn</code>. An expandable
+"More details" section reveals four optional fields: <strong>brand</strong> and <strong>category</strong>
+(strongly recommended — they narrow item-vector retrieval and improve cold-start RMSE) plus
+<strong>features</strong> (newline-separated list, split to <code>string[]</code> before WS send)
+and <strong>technical details</strong>. Optional fields never block the send button.
+<code>ProductFields.price_ngn</code> is typed as <code>number</code> (not nullable); the WS type
+in <code>ws.ts</code> marks <code>item_name</code> and <code>price_ngn</code> as required,
+matching the FastAPI Pydantic model.</p>
 
 <h3>11.2 Price currency display</h3>
 <p>The form always submits the price into <code>price_ngn</code>. The currency symbol shown in the placeholder ($ or ₦) is derived from <code>persona.locale</code>. On the backend, <code>build_user_prompt</code> reads <code>price_usd</code> for US locale but falls back to <code>price_ngn</code> when <code>price_usd</code> is None — which is the common case since submitted prices always land in <code>price_ngn</code>.</p>
@@ -1079,6 +1104,20 @@ flowchart TB
       <td>The closing instruction change (build_user_prompt) applies to ALL users, not gated by tendency. For true=3 cases, this prevented the model from writing any caveat, leading to 5★ predictions. Caveat suppression works for clean 5★ products but is globally destructive when applied without exact product quality signal. Provider mixing (Cerebras vs Groq) adds model-level variance as a confound. Root fix must be retrieval-based.</td>
     </tr>
     <tr>
+      <td>Masked eval baseline ✅ METHODOLOGY ADOPTED</td>
+      <td><strong>Hidden-item eval mode (<code>--hide-target-item</code>).</strong> Temporarily removes only the <code>:Item</code> label from the target product node in Neo4j for each eval case, runs the normal pipeline unchanged, then restores the label in <code>finally</code>. Exact-item lookup/stats cannot see the product; item-vector retrieval, category fallback, prompt flow, and rating flow operate normally. Changed: <code>run_eval.py</code>, <code>retrieval.py</code>, <code>task_a.py</code>.</td>
+      <td>50 hidden cases · mistral-medium-3-5</td>
+      <td><code>RMSE=1.0954</code>, <code>MAE=0.8000</code>, Branches: item_vector 50/50. Known-item baseline: <code>RMSE=0.7746</code>, <code>MAE=0.4400</code>, exact_item 40/50. Gap = +0.32 RMSE.</td>
+      <td>Adopted as the canonical stress-test mode. Confirms the system depends heavily on exact-item community evidence; cold-product reasoning is the key next improvement.</td>
+    </tr>
+    <tr>
+      <td>Rich input test ✅ UI UPDATE QUEUED</td>
+      <td><strong>Rich product metadata as request input.</strong> Added <code>item_brand</code>, <code>item_category</code>, <code>item_features[]</code>, <code>item_details</code> to the WS request and embedding text. Eval compared minimal (title+desc+price) vs rich (title+brand+category+price+desc+features+details) on 50 masked cases. Both runs used <code>--hide-target-item</code> so exact-item lookup never fires.</td>
+      <td>50 hidden cases · mistral-medium-3-5 · <code>--hide-target-item</code></td>
+      <td>Minimal: <code>RMSE=1.0296</code>, <code>MAE=0.7000</code>, exact hits 23/50. Rich: <code>RMSE=0.9899</code>, <code>MAE=0.6600</code>, exact hits 25/50. Δ: −0.040 RMSE, −0.040 MAE, +2 hits. Rich improved 11 cases, worsened 10, left 29 unchanged.</td>
+      <td>UI update queued to accept richer product metadata. Category/brand constraint of item-vector retrieval is the mechanism. Features/details add material, compatibility, and certification signals. Rich input is necessary but not sufficient — cold-product reasoning must also improve.</td>
+    </tr>
+    <tr>
       <td>Pass 11 ❌ REVERTED (inconclusive)</td>
       <td><strong>Knowledge-graph retrieval fix: negative-evidence supplement for community reviews.</strong> Added <code>QUERY_EXACT_ITEM_LOW</code> to <code>inference/retrieval.py</code> — a dedicated query fetching the lowest-rated (≤3★) exact-item reviews by other users. After <code>QUERY_B</code> fills its N=5 community slots, if all returned reviews are ≥4★, the supplement replaces the last 1-2 slots with negative evidence. Mirrors <code>add_low_neutral()</code> for user style exemplars but applied to community evidence (Block C).</td>
       <td>First 15 fresh holdouts, Cerebras <code>gpt-oss-120b</code></td>
@@ -1107,8 +1146,9 @@ flowchart TB
 
 <h3>Current Failure Pattern</h3>
 <ul>
+  <li><strong>Cold-start / unseen-product gap.</strong> The 50-case masked eval (target item label hidden in Neo4j) shows RMSE 0.9899 vs 0.7746 for known items — a +0.22 gap. All 50 masked cases fall into the <code>item_vector</code> branch. The system relies heavily on exact-item community reviews; when those are unavailable, item-vector neighbors carry the full load. Richer product input (brand/category/features/details) closes this gap by 0.040 RMSE but does not eliminate it. The fix is richer cold-product reasoning from metadata + rating-bucket-diverse item-vector retrieval.</li>
   <li><strong>Retrieval bias → catastrophic low-star misses.</strong> When a product's DB representation is skewed positive (high-rated reviews are more recent or same-locale), <code>QUERY_B</code> returns all-positive evidence. The model rationally generates a positive review with no basis for a negative rating. Pass 11 addresses this with a negative-evidence supplement query.</li>
-  <li><strong>Hallucinated caveats on true 5-star items.</strong> The model occasionally adds mild qualifiers ("slightly smaller", "feels a bit cheap") on genuinely positive items, causing the rating model to predict 4 instead of 5. The anti-caveat approach (Pass 9, 10) was too risky because the same suppression harms true 4-star items. A safer approach would require the model to cite the specific retrieved evidence for any caveat.</li>
+  <li><strong>Hallucinated caveats on true 5-star items.</strong> The model occasionally adds mild qualifiers ("slightly smaller", "feels a bit cheap") on genuinely positive items, causing the rating model to predict 4 instead of 5. The anti-caveat approach (Pass 9, 10) was too risky because the same suppression harms true 4-star items. A safer approach would require the model to cite specific retrieved evidence for any caveat.</li>
   <li><strong>Short Nigerian reviews achieve near-zero ROUGE-L.</strong> A terse heldout like "Stopped working on the first day" generates ROUGE-L ≈ 0 even when the generated text is semantically aligned. This is a metric artifact, not a generation failure.</li>
   <li>Post-Pass 9/10 lesson: prompt rules conditioned on retrieval signal quality are unsafe when the retrieval itself is biased. Fix the retrieval gap first, then re-evaluate whether prompt rules are still needed.</li>
 </ul>

@@ -86,18 +86,76 @@ export type ErrorEvent = {
   message: string;
 };
 
-export type WsEvent = StepEvent | TokenEvent | GraphDataEvent | FinalEvent | ErrorEvent;
+// ── Task B: Recommendation types ──────────────────────────────────────────────
+
+export type RecommendItem = {
+  item_id: string;
+  title: string;
+  category: string | null;
+  price_usd: number | null;
+  price_ngn: number | null;
+  avg_rating: number | null;
+  rating_count: number | null;
+  match_score: number;
+  reasons: string[];
+};
+
+export type RecommendFinalEvent = {
+  type: "recommend_final";
+  user_id: string;
+  context_query: string;
+  items: RecommendItem[];
+  locale: string | null;
+};
+
+export type ToolCallEvent = {
+  type: "tool_call";
+  call_id: string;
+  tool: string;
+  phase: "start" | "done";
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+};
+
+export type WsEvent = StepEvent | TokenEvent | GraphDataEvent | FinalEvent | RecommendFinalEvent | ErrorEvent | ToolCallEvent;
 
 // ── Chat thread types ─────────────────────────────────────────────────────────
-export type AssistantPayload = {
-  type: "review";
-  review_text: string;
-  predicted_rating: number;
-  user_id: string;
-  item_id: string;
-  locale: string | null;
-  retrieval_branch: string;
+export type ToolCallStep = {
+  kind: "tool_call";
+  id: string;
+  tool: string;
+  label: string;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  status: "running" | "done";
 };
+
+export type RegularStep = {
+  kind?: "step";
+  id: string;
+  label: string;
+  detail?: string;
+};
+
+export type AnyStep = RegularStep | ToolCallStep;
+
+export type AssistantPayload =
+  | {
+      type: "review";
+      review_text: string;
+      predicted_rating: number;
+      user_id: string;
+      item_id: string;
+      locale: string | null;
+      retrieval_branch: string;
+    }
+  | {
+      type: "recommend";
+      user_id: string;
+      context_query: string;
+      items: RecommendItem[];
+      locale: string | null;
+    };
 
 export type ChatMessage = {
   id: string;
@@ -105,7 +163,7 @@ export type ChatMessage = {
   text: string;
   createdAt: number;
   payload?: AssistantPayload;
-  steps?: { id: string; label: string; detail?: string }[];
+  steps?: AnyStep[];
   graph?: GraphData;
 };
 

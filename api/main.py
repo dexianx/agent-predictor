@@ -14,7 +14,11 @@ from task_a.inference.persona_loader import (
     search_personas,
 )
 from task_a.inference.task_a import SimulateRequest, simulate_review
-from api.models import PersonaDetail, CategoryBias, SimulateResponse
+from task_b.inference.recommend import RecommendRequest, recommend_items
+from api.models import (
+    PersonaDetail, CategoryBias, SimulateResponse,
+    RecommendResponse, RecommendItem,
+)
 
 import sqlite3
 
@@ -151,4 +155,70 @@ async def rest_simulate(req: SimulateRequest):
         predicted_rating=final["predicted_rating"],
         locale=final.get("locale"),
         retrieval_branch=final["retrieval_branch"],
+    )
+
+
+# ── Task B: Recommendation WebSocket ─────────────────────────────────────────
+
+@app.websocket("/ws/recommend")
+async def ws_recommend(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_text()
+        data = json.loads(raw)
+        req = RecommendRequest(**data)
+
+        async def emit(event: dict):
+            await websocket.send_text(json.dumps(event))
+
+        await recommend_items(req, emit)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        try:
+            await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.post("/recommend", response_model=RecommendResponse)
+async def rest_recommend(req: RecommendRequest):
+    events: list[dict] = []
+
+    async def collect(ev: dict):
+        events.append(ev)
+
+    await recommend_items(req, collect)
+
+    final = next((e for e in events if e.get("type") == "recommend_final"), None)
+    if final is None:
+        error = next((e for e in events if e.get("type") == "error"), None)
+        msg = error["message"] if error else "Recommendation failed"
+        raise HTTPException(status_code=500, detail=msg)
+
+    items = [
+        RecommendItem(
+            item_id=i.get("item_id", ""),
+            title=i.get("title", ""),
+            category=i.get("category"),
+            price_usd=i.get("price_usd"),
+            price_ngn=i.get("price_ngn"),
+            avg_rating=float(i.get("avg_rating", 0)),
+            rating_count=int(i.get("rating_count", 0)),
+            match_score=float(i.get("match_score", 0)),
+            reasons=i.get("reasons", []),
+        )
+        for i in final["items"]
+    ]
+
+    return RecommendResponse(
+        user_id=final["user_id"],
+        context_query=final["context_query"],
+        items=items,
+        locale=final.get("locale"),
     )

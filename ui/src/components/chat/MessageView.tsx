@@ -6,6 +6,7 @@ import type { PersonaDetail } from "@/lib/types";
 import { useMemo } from "react";
 import { AgentSteps } from "./AgentSteps";
 import { KnowledgeGraph } from "./KnowledgeGraph";
+import { RecommendResultCards } from "./RecommendResultCards";
 
 type Props = {
   message: ChatMessage;
@@ -105,7 +106,7 @@ export function MessageView({ message, persona, streaming }: Props) {
           }
           return (
             <div
-              className={`text-[15px] md:text-[15.5px] leading-[1.7] text-foreground prose prose-sm max-w-none prose-p:my-0 prose-strong:text-foreground prose-strong:font-semibold${
+              className={`text-[15px] md:text-[15.5px] leading-[1.7] text-foreground prose prose-sm max-w-none overflow-x-hidden [overflow-wrap:break-word] [word-break:break-word] prose-p:my-0 prose-strong:text-foreground prose-strong:font-semibold prose-pre:overflow-x-auto prose-pre:max-w-full prose-code:break-all${
                 streaming ? " prose-streaming" : ""
               }`}
             >
@@ -129,6 +130,20 @@ export function MessageView({ message, persona, streaming }: Props) {
             {message.payload.review_text}
           </blockquote>
           <StarRating rating={message.payload.predicted_rating} />
+        </motion.div>
+      )}
+
+      {message.payload?.type === "recommend" && !streaming && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, ease: EASE }}
+          className="mt-3"
+        >
+          <div className="text-xs text-muted-foreground mb-2">
+            {message.payload.items.length} recommendations · {message.payload.locale ?? "??"} · KG + Mistral reasoning
+          </div>
+          <RecommendResultCards items={message.payload.items} />
         </motion.div>
       )}
 

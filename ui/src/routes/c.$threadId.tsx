@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Sidebar } from "@/components/chat/Sidebar";
@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/chat/EmptyState";
 import { MessageView } from "@/components/chat/MessageView";
 import { PersonaDetailModal } from "@/components/chat/PersonaDetailModal";
 import { appendMessage, newMessageId, updateMessage, useThread } from "@/hooks/useThreads";
+import { ensureFirstRecThread } from "@/hooks/useRecThreads";
 import { getPersonaDetail } from "@/lib/api";
 import { connectSimulate } from "@/lib/ws";
 import { getPersonaDisplayName } from "@/lib/persona-utils";
@@ -93,9 +94,11 @@ function ChatPage() {
   const handleSubmit = async (fields: ProductFields) => {
     if (streamingId) return;
 
-    const { item_name, item_description, price_ngn } = fields;
+    const { item_name, item_description, price_ngn, item_brand, item_category, item_features, item_details } = fields;
+    const meta = [item_brand, item_category].filter(Boolean).join(" · ");
     const displayText = [
       item_name,
+      meta || null,
       item_description || null,
       price_ngn != null
         ? `${persona?.locale === "US" ? "$" : "₦"}${price_ngn.toLocaleString()}`
@@ -138,6 +141,12 @@ function ChatPage() {
         user_id: userId,
         item_name,
         item_description: item_description || undefined,
+        item_brand: item_brand || undefined,
+        item_category: item_category || undefined,
+        item_features: item_features
+          ? item_features.split("\n").map((s) => s.trim()).filter(Boolean)
+          : undefined,
+        item_details: item_details || undefined,
         price_ngn,
       })) {
         if (stopRef.current) break;
@@ -220,9 +229,23 @@ function ChatPage() {
               {persona && <span className="opacity-40 text-[10px]">↗ view profile</span>}
             </button>
           </div>
+
+          {/* Mode navigation */}
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-[12px] font-medium px-3 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
+              Review
+            </span>
+            <Link
+              to="/r/$threadId"
+              params={{ threadId: ensureFirstRecThread().id }}
+              className="text-[12px] px-3 py-1 rounded-full border border-border/60 text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+            >
+              Recommend ↗
+            </Link>
+          </div>
         </header>
 
-        <div ref={transcriptRef} className="flex-1 overflow-y-auto kora-scroll" key={threadId}>
+        <div ref={transcriptRef} className="flex-1 overflow-y-auto overflow-x-hidden kora-scroll" key={threadId}>
           {thread.messages.length === 0 ? (
             <EmptyState persona={persona} onPick={handleSubmit} />
           ) : (
