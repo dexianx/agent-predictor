@@ -8,16 +8,18 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-# Providers: gemini (default) | groq | cerebras
+# Providers: gemini (default) | groq | cerebras | mistral
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
-_VALID_PROVIDERS = frozenset({"gemini", "groq", "cerebras"})
-_OPENAI_COMPAT_PROVIDERS = frozenset({"groq", "cerebras"})
+_VALID_PROVIDERS = frozenset({"gemini", "groq", "cerebras", "mistral"})
+_OPENAI_COMPAT_PROVIDERS = frozenset({"groq", "cerebras", "mistral"})
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "gpt-oss-120b")
 CEREBRAS_BASE_URL = os.environ.get("CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1")
+MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-small-2506")
+MISTRAL_BASE_URL = os.environ.get("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
 
 # Shared retry policy for OpenAI-compatible providers (Groq, Cerebras)
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", os.environ.get("GROQ_MAX_RETRIES", "6")))
@@ -52,6 +54,13 @@ def _openai_compat_config() -> dict[str, str]:
             "api_key_env": "CEREBRAS_API_KEY",
             "default_model": CEREBRAS_MODEL,
             "label": "Cerebras",
+        }
+    if LLM_PROVIDER == "mistral":
+        return {
+            "base_url": MISTRAL_BASE_URL,
+            "api_key_env": "MISTRAL_API_KEY",
+            "default_model": MISTRAL_MODEL,
+            "label": "Mistral",
         }
     return {
         "base_url": GROQ_BASE_URL,

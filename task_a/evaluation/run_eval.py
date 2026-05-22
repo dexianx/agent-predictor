@@ -286,7 +286,7 @@ def _print_holdout_report(case, result, rubric, behavior, bundle: ReferenceBundl
     print(
         "Rating audit: "
         f"true={audit['true_rating']} "
-        f"struct={_fmt(audit['r_struct_float'])}/{audit['r_struct_int']} "
+        f"struct={_fmt(audit.get('r_struct_float'))}/{audit.get('r_struct_int', 'n/a')} "
         f"llm={audit['r_llm']} "
         f"r_final={_fmt(audit['r_final'])} "
         f"final={audit['final_rating']} "
@@ -363,6 +363,8 @@ def _rating_audit(case: EvalHoldoutCase, result: dict[str, Any]) -> dict[str, An
         abs_error = abs(float(final_rating) - float(true_rating))
     return {
         "true_rating": true_rating,
+        "r_struct_float": rating_context.get("r_struct_float"),
+        "r_struct_int": rating_context.get("r_struct_int"),
         "r_llm": rating_context.get("r_llm"),
         "r_llm_raw": rating_context.get("r_llm_raw"),
         "r_final": rating_context.get("r_final"),

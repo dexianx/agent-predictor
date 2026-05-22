@@ -92,6 +92,135 @@ def _consistency_label(rating_mean: float, rating_std: float, review_count: int)
     return "critical"
 
 
+def _writing_length_label(avg_words: int) -> str:
+    if avg_words <= 35:
+        return "short"
+    if avg_words <= 90:
+        return "medium"
+    return "long"
+
+
+def _formality_label(vocab_richness: float, avg_sent_len: float | None) -> str:
+    sent_len = avg_sent_len or 0.0
+    if vocab_richness >= 0.55 or sent_len >= 18:
+        return "formal/detailed"
+    if vocab_richness <= 0.30 and sent_len <= 10:
+        return "casual/direct"
+    return "natural"
+
+
+def _top_aspects(persona: dict, aspect_risks: dict[str, dict]) -> list[str]:
+    aspects = list(aspect_risks.keys())
+    if (persona.get("price_sensitivity") or 0.0) > 0.15:
+        aspects.append("value for money")
+    if (persona.get("authenticity_concern") or 0.0) > 0.15:
+        aspects.append("authenticity")
+    if (persona.get("naira_mention_rate") or 0.0) > 0.02:
+        aspects.append("local price")
+    if not aspects:
+        aspects = ["quality", "usefulness", "value"]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for aspect in aspects:
+        if aspect not in seen:
+            deduped.append(aspect)
+            seen.add(aspect)
+    return deduped[:4]
+
+
+def _aspect_sentiment_score(signals: dict) -> float:
+    """Translate aspect/risk evidence into a 1-5 rating component.
+
+    This is not a sentiment model; it is a conservative graph-derived proxy.
+    Negative exact-item risks and low-rating retrieved reviews push the score
+    down, while a clean high-rating item/retrieval mix keeps it positive.
+    """
+    score = 3.5
+    negative_count = int(signals.get("others_negative_count") or 0)
+    neutral_count = int(signals.get("others_neutral_count") or 0)
+    positive_count = int(signals.get("others_positive_count") or 0)
+    risk_count = sum(
+        int(info.get("count") or 0)
+        for info in (signals.get("aspect_risks") or {}).values()
+    )
+    exact_risk_count = sum(
+        int(info.get("count") or 0)
+        for info in (signals.get("aspect_risks") or {}).values()
+        if info.get("has_exact")
+    )
+
+    score += min(positive_count, 4) * 0.18
+    score -= min(negative_count, 4) * 0.35
+    score -= min(neutral_count, 3) * 0.12
+    score -= min(risk_count, 4) * 0.25
+    score -= min(exact_risk_count, 3) * 0.20
+
+    if (signals.get("item_low_ratio") or 0.0) >= 0.35:
+        score -= 0.45
+    if (signals.get("item_high_ratio") or 0.0) >= 0.80 and not signals.get("aspect_risks"):
+        score += 0.35
+
+    return max(1.0, min(5.0, score))
+
+
+def _generation_rating_prior(signals: dict) -> dict:
+    """Component formula for the review-generation rating target.
+
+    predicted_rating =
+      user_avg + item_avg + aspect_sentiment + similar_user_avg
+
+    Implemented as a weighted average so the result stays on the 1-5 scale.
+    The final numeric rating is still produced by the existing calibrated
+    rating call; this prior only makes the generated review tone consistent.
+    """
+    user_avg = float(signals.get("rating_mean") or 3.5)
+    item_avg = signals.get("exact_item_mean")
+    if item_avg is None:
+        item_avg = signals.get("category_mean")
+    item_avg = float(item_avg or user_avg)
+
+    similar_user_avg = signals.get("others_mean")
+    if similar_user_avg is None:
+        similar_user_avg = item_avg
+    similar_user_avg = float(similar_user_avg or item_avg)
+
+    aspect_sentiment = _aspect_sentiment_score(signals)
+
+    weights = {
+        "user_avg": 0.30,
+        "item_avg": 0.25,
+        "aspect_sentiment": 0.20,
+        "similar_user_avg": 0.25,
+    }
+    predicted_float = (
+        weights["user_avg"] * user_avg
+        + weights["item_avg"] * item_avg
+        + weights["aspect_sentiment"] * aspect_sentiment
+        + weights["similar_user_avg"] * similar_user_avg
+    )
+
+    if (signals.get("item_low_ratio") or 0.0) >= 0.45 and (signals.get("item_low_count") or 0) >= 2:
+        predicted_float = min(predicted_float, 3.2)
+    if signals.get("negative_examples") and (signals.get("others_negative_count") or 0) >= 2:
+        predicted_float = min(predicted_float, 3.2)
+    if user_avg >= 4.5 and not signals.get("aspect_risks") and predicted_float >= 4.0:
+        predicted_float += 0.15
+
+    predicted_float = max(1.0, min(5.0, predicted_float))
+    return {
+        "predicted_float": round(predicted_float, 3),
+        "predicted_int": max(1, min(5, int(round(predicted_float)))),
+        "components": {
+            "user_avg": round(user_avg, 3),
+            "item_avg": round(item_avg, 3),
+            "aspect_sentiment": round(aspect_sentiment, 3),
+            "similar_user_avg": round(similar_user_avg, 3),
+        },
+        "weights": weights,
+    }
+
+
 def derive_signals(
     persona: dict,
     own_reviews: list[dict],
@@ -178,17 +307,21 @@ def derive_signals(
     price_sensitivity = persona.get("price_sensitivity") or 0.0
 
     aspect_risks = extract_aspect_risks(others_on_item)
+    top_aspects = _top_aspects(persona, aspect_risks)
     item_stats = item_meta.get("item_rating_stats") or {}
     exact_item_count = int(item_stats.get("count") or 0)
     item_low_ratio = float(item_stats.get("low_ratio") or 0.0)
     item_high_ratio = float(item_stats.get("high_ratio") or 0.0)
+    length_label = _writing_length_label(avg_own_words)
+    formality_label = _formality_label(vocab, persona.get("avg_sent_len"))
 
-    return {
+    signals = {
         "rating_mean":      rating_mean,
         "rating_std":       rating_std,
         "rating_skew":      rating_skew,
         "review_count":     review_count,
         "consistency_label": _consistency_label(rating_mean, rating_std, review_count),
+        "target_category":   category,
         "category_mean":    category_mean,
         "category_count":   category_count,
         "others_mean":      others_mean,
@@ -199,6 +332,8 @@ def derive_signals(
         "negative_examples": exact_or_item_low,
         "neutral_examples": neutral_reviews,
         "avg_own_words":    avg_own_words,
+        "writing_length_label": length_label,
+        "formality_label":  formality_label,
         "vocab_label":      vocab_label,
         "tendency":         tendency,
         "pidgin_label":     pidgin_label,
@@ -207,6 +342,7 @@ def derive_signals(
         "price_sensitivity": price_sensitivity,
         "locale":           locale,
         "aspect_risks":     aspect_risks,
+        "top_aspects":      top_aspects,
         "exact_item_count":  exact_item_count,
         "exact_item_mean":   item_stats.get("mean"),
         "exact_item_std":    float(item_stats.get("std") or 0.0),
@@ -217,6 +353,12 @@ def derive_signals(
         "item_high_count":   int(item_stats.get("high_count") or 0),
         "item_bimodal":      bool(item_stats.get("bimodal")),
     }
+    rating_prior = _generation_rating_prior(signals)
+    signals["generation_rating_prior"] = rating_prior["predicted_int"]
+    signals["generation_rating_float"] = rating_prior["predicted_float"]
+    signals["generation_rating_components"] = rating_prior["components"]
+    signals["generation_rating_weights"] = rating_prior["weights"]
+    return signals
 
 
 # ── Cultural voice overlay ────────────────────────────────────────────────────
@@ -300,27 +442,34 @@ def build_system_prompt(persona: dict, signals: dict, cultural_block: str) -> st
     vocab     = signals["vocab_label"]
     emotion   = signals["emotion_label"]
     avg_words = signals["avg_own_words"]
+    top_aspects = ", ".join(signals.get("top_aspects") or ["quality", "usefulness", "value"])
+    category = signals.get("target_category") or "this category"
+    category_mean = signals.get("category_mean") or signals.get("rating_mean") or 3.5
+    writing_style = f"{signals.get('writing_length_label', 'medium')}, {signals.get('formality_label', 'natural')}"
 
     pidgin_line = ""
     if locale == "NG" and pid_label != "none":
-        pidgin_line = f"\n- Pidgin usage: {pid_label} — mirror this in your output."
+        pidgin_line = f"\n- Pidgin usage: {pid_label}; mirror it only if it naturally fits this user."
 
     price_sens = signals.get("price_sensitivity") or 0.0
     price_awareness_line = ""
     if price_sens > 0.3:
-        price_awareness_line = "\n- Price sensitivity: HIGH — explicitly comment on value for money relative to the price point"
+        price_awareness_line = "\n- Price sensitivity: high; value for money may matter if the product evidence supports it."
     elif price_sens > 0.1:
-        price_awareness_line = "\n- Price sensitivity: MODERATE — mention price if it stands out"
+        price_awareness_line = "\n- Price sensitivity: moderate; mention price only if it stands out."
 
-    system = f"""TASK: Write a single authentic product review as if you are this specific user.
-Output only the review text — no preamble, no labels, no quotes.
+    system = f"""You are simulating a real user writing a product review.
+Write exactly how this user writes. Do not be generic.
+Output only the review text. Do not include "Rating:" or labels.
 
-SHOPPER PROFILE:
-- Locale: {locale}  Platform: {persona.get('platform', 'e-commerce')}
-- Overall rating tendency: {tendency} (mean {signals['rating_mean']:.2f}★, σ={signals['rating_std']:.2f})
-- Vocabulary: {vocab}
-- Emotional tone: {emotion}
-- Target length: ~{avg_words} words (based on this user's historical review length){pidgin_line}{price_awareness_line}
+USER PROFILE:
+- Average rating overall: {signals['rating_mean']:.2f} stars
+- Average rating in {category}: {category_mean:.2f} stars
+- Writing style: {writing_style}; vocabulary is {vocab}; tone is {emotion}
+- Cares most about: {top_aspects}
+- Rating tendency: {tendency}
+- Locale/platform: {locale} / {persona.get('platform', 'e-commerce')}
+- Target length: around {avg_words} words, based on this user's historical reviews{pidgin_line}{price_awareness_line}
 
 CRITICAL STYLE RULE: The review must sound like this specific shopper — their cadence,
 their level of detail, their emotional register. Do NOT write a generic review."""
@@ -375,6 +524,31 @@ def build_user_prompt(
     if signals.get("others_mean") is not None:
         dist_note += f" (mean {signals['others_mean']:.2f}★)"
 
+    predicted_rating = int(signals.get("generation_rating_prior") or 4)
+    rating_components = signals.get("generation_rating_components") or {}
+    rating_formula = (
+        "Rating prior components: "
+        f"user_avg={rating_components.get('user_avg', 'n/a')}, "
+        f"item_avg={rating_components.get('item_avg', 'n/a')}, "
+        f"aspect_sentiment={rating_components.get('aspect_sentiment', 'n/a')}, "
+        f"similar_user_avg={rating_components.get('similar_user_avg', 'n/a')}, "
+        f"combined={signals.get('generation_rating_float', predicted_rating)}"
+    )
+    if predicted_rating <= 2:
+        consistency_rule = (
+            "The review should carry frustration, regret, or a clear account of what went wrong. "
+            "Do not make it sound satisfied."
+        )
+    elif predicted_rating == 3:
+        consistency_rule = (
+            "The review should feel mixed: usable or okay, but with a real limitation, hesitation, or tradeoff."
+        )
+    else:
+        consistency_rule = (
+            "The review should carry satisfaction and specific praise. Mention caveats only when exact item evidence "
+            "or this user's own style supports them."
+        )
+
     caution_lines = []
     for text in signals.get("negative_examples") or []:
         caution_lines.append(f"- {text}")
@@ -395,18 +569,45 @@ def build_user_prompt(
             risk_lines.append(f"- {aspect}: {count} mention{'s' if count > 1 else ''}{exact_flag}")
         aspect_block = "\n\nVISIBLE ITEM RISKS (extracted from retrieved community reviews):\n" + "\n".join(risk_lines)
 
-    return f"""HOW THIS SHOPPER WRITES (their own past reviews):
-{own_block}
+    top_aspects = ", ".join(signals.get("top_aspects") or ["quality", "usefulness", "value"])
+    global_avg = avg_rating
+    if not global_avg and signals.get("exact_item_mean") is not None:
+        global_avg = signals.get("exact_item_mean")
+    global_avg_text = f"{float(global_avg):.2f} stars" if global_avg else "unknown"
 
-WHAT OTHERS SAY ABOUT THIS ITEM:
+    nigerian_block = ""
+    if locale == "NG":
+        nigerian_block = f"""
+NIGERIAN CONTEXTUALISATION:
+Write like a Nigerian reviewer naturally would. Value consciousness, durability,
+delivery experience, reseller markup, and authenticity may matter when the evidence supports them.
+Use natural Nigerian English where it fits; never force slang or Pidgin.
+Do not list {top_aspects} mechanically. Weave relevant concerns into a real story."""
+
+    return f"""PRODUCT:
+- Name: {item_line}
+- Category: {category or "unknown"}
+- Price: {price_section.replace(chr(10) + "Price: ", "") if price_section else "unknown"}
+- Global average rating: {global_avg_text}{item_context}{cat_note}{dist_note}
+
+SIMILAR USERS REVIEWED THIS PRODUCT:
 {others_block}{caution_block}{aspect_block}
 
-ITEM TO REVIEW:
-{item_line}{price_section}{desc_section}{item_context}{cat_note}{dist_note}
+THIS USER'S PAST REVIEWS:
+{own_block}
 
-Write the review now. Reflect the evidence honestly. Do not invent caveats just because
-some same-category products have issues; include a caveat only when the target item evidence
-or this user's own history supports it."""
+PREDICTED RATING TO WRITE TOWARD: {predicted_rating} stars
+{rating_formula}
+
+CRITICAL CONSISTENCY RULE:
+{consistency_rule}
+The review must sound like someone who genuinely gave {predicted_rating} stars.{nigerian_block}
+
+PRODUCT DETAILS FROM REQUEST:
+{desc_section.replace(chr(10) + "Product details: ", "") if desc_section else "none provided"}
+
+OUTPUT:
+Write only the review text. Do not include the numeric rating, headings, bullets, or quotes."""
 
 
 def build_rating_prompt(
