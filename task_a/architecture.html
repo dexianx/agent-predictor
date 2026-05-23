@@ -107,7 +107,7 @@
 <body>
 
 <h1>Kora — Task A System Architecture</h1>
-<p class="subtitle">DSN × BCT LLM Agent Challenge · Persona-Conditioned Review Generation · Paper reference — code-grounded, updated May 2026</p>
+<p class="subtitle">DSN × BCT LLM Agent Challenge · Persona-Conditioned Review Generation · Paper reference — code-grounded, updated May 2026 | <a href="../README.md" style="color:var(--primary)">← Project README</a></p>
 
 <div class="toc">
   <strong style="color:#ddd;">Contents</strong>
@@ -140,8 +140,10 @@
 
 <table>
 <tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
-<tr><td>LLM provider (primary)</td><td><code>gemini-2.5-flash</code> via <code>google-genai</code> SDK</td><td>Native structured outputs (<code>response_mime_type=application/json</code> + Pydantic schema), low latency, strong instruction-following on 5-block ICL.</td></tr>
-<tr><td>LLM provider (fallback)</td><td>Groq <code>llama-3.3-70b-versatile</code> via OpenAI-compatible HTTP</td><td>Switchable with <code>LLM_PROVIDER=groq</code>; same <code>RetrievalQuery</code> / <code>ReviewRating</code> Pydantic contracts via <code>response_format: json_object</code>.</td></tr>
+<tr><td>LLM provider (default)</td><td><code>gemini-2.5-flash</code> via <code>google-genai</code> SDK · <code>LLM_PROVIDER=gemini</code></td><td>Native structured outputs (<code>response_mime_type=application/json</code> + Pydantic schema), low latency, strong instruction-following on 5-block ICL.</td></tr>
+<tr><td>LLM provider (eval best)</td><td>Mistral <code>mistral-medium-latest</code> via OpenAI-compatible HTTP · <code>LLM_PROVIDER=mistral</code></td><td>Used for our best Task A eval run (RMSE 0.775). Switchable with same Pydantic contracts.</td></tr>
+<tr><td>LLM provider (alt)</td><td>Groq <code>llama-3.3-70b-versatile</code> · <code>LLM_PROVIDER=groq</code></td><td>Free-tier alternative; baseline run provider. OpenAI-compatible.</td></tr>
+<tr><td>LLM provider (alt)</td><td>Cerebras <code>gpt-oss-120b</code> · <code>LLM_PROVIDER=cerebras</code></td><td>Used in early evaluation iterations. Very fast on CPU-based inference. OpenAI-compatible.</td></tr>
 <tr><td>Knowledge graph</td><td>Neo4j 5.x (async driver)</td><td>Cypher expressiveness for traversal (<code>(User)-[:WROTE]-&gt;(Review)-[:ABOUT]-&gt;(Item)-[:IN_CATEGORY]-&gt;(Category)</code>) plus native vector index. Two independent async sessions per request to avoid driver socket conflicts.</td></tr>
 <tr><td>Vector index</td><td><code>review_embedding</code> · 384-dim cosine · on <code>Review.embedding</code></td><td>Built by <code>Neo4jWriter.create_indexes()</code>; 0.72 cosine threshold chosen empirically for topic relevance vs. recall tradeoff.</td></tr>
 <tr><td>Embeddings</td><td><code>sentence-transformers/all-MiniLM-L6-v2</code> (CPU, batch=64) · <code>HashingEmbedder</code> for tests</td><td>384-dim, fast on CPU, batched in pipeline and per-request in inference (lazy-loaded, cached globally after first call).</td></tr>
@@ -692,7 +694,7 @@ Write the review now:</pre>
 <h2 id="llm">9. LLM Layer</h2>
 
 <h3>9.1 Provider abstraction (<code>inference/llm_client.py</code>)</h3>
-<p>Three public entry points dispatch on <code>LLM_PROVIDER ∈ {gemini, groq}</code>:</p>
+<p>Three public entry points dispatch on <code>LLM_PROVIDER ∈ {gemini, mistral, groq, cerebras}</code>. Gemini uses the native <code>google-genai</code> SDK; the other three are OpenAI-compatible HTTP (same code path, different base URL and API key):</p>
 <table>
 <tr><th>Entry point</th><th>Purpose</th><th>Output contract</th></tr>
 <tr><td><code>call_generate_cypher(prompt)</code></td><td>LLM Cypher generation (Tier 2 fallback: when Tier 1 category query returns 0 rows)</td><td><code>RetrievalQuery{cypher: str}</code> — validated to start with MATCH/CALL</td></tr>
@@ -725,6 +727,8 @@ Write the review now:</pre>
 <tr><td><code>GET /personas/{user_id}</code></td><td>Full <code>PersonaDetail</code> with all 17 signals + <code>cat_bias</code> list.</td></tr>
 <tr><td><code>POST /simulate</code></td><td>Non-streaming fallback — collects all events server-side and returns the <code>final</code> payload.</td></tr>
 <tr><td><code>WS /ws/simulate</code></td><td>Primary path. Client sends one JSON request; server streams typed events to completion.</td></tr>
+<tr><td><code>POST /recommend</code></td><td>Task B — REST recommendation endpoint; returns ranked items for a persona + query.</td></tr>
+<tr><td><code>WS /ws/recommend</code></td><td>Task B — WebSocket recommendation; streams step events + ranked result cards to client.</td></tr>
 </table>
 
 <h3>10.2 Request schema</h3>

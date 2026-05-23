@@ -3,3 +3,49 @@
   [s100] 30/321 case_id=71
   [s100] 40/321 case_id=80
   [s100] 50/321 case_id=90
+[s100|none] 330 cases to run (0 skipped, already in JSONL)
+/opt/homebrew/Cellar/python@3.11/3.11.14_3/Frameworks/Python.framework/Versions/3.11/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[s100|none] 40 cases to run (0 skipped, already in JSONL)
+/opt/homebrew/Cellar/python@3.11/3.11.14_3/Frameworks/Python.framework/Versions/3.11/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[s100|none] 30 cases to run (0 skipped, already in JSONL)
+  [s100] 10/30 case_id=373
+  [s100] 20/30 case_id=387
+  [s100] 30/30 case_id=395
+[e2e|none] 30 cases to run (0 skipped, already in JSONL)
+  [e2e] 10/30 case_id=375
+  [e2e] 20/30 case_id=386
+  [e2e] 30/30 case_id=394
+
+Wrote results to task_b/evaluation/results/main.jsonl
+[s100|none] 25 cases to run (30 skipped, already in JSONL)
+[s100|none] 0 cases to run (35 skipped, already in JSONL)
+[e2e|none] 0 cases to run (30 skipped, already in JSONL)
+
+Wrote results to task_b/evaluation/results/main.jsonl
+[s100|none] 20 cases to run (35 skipped, already in JSONL)
+  [s100] 10/20 case_id=480
+  [s100] 20/20 case_id=489
+[e2e|none] 25 cases to run (30 skipped, already in JSONL)
+  [e2e] 10/25 case_id=476
+  [e2e] 20/25 case_id=487
+  [e2e] 25/25 case_id=477
+
+Wrote results to task_b/evaluation/results/main.jsonl
+[s100|none] 25 cases to run (55 skipped, already in JSONL)
+  [s100] 10/25 case_id=577
+  [s100] 20/25 case_id=587
+  [s100] 25/25 case_id=590
+[e2e|none] 25 cases to run (55 skipped, already in JSONL)
+  [e2e] 10/25 case_id=574
+  [e2e] 20/25 case_id=586
+  [e2e] 25/25 case_id=589
+
+Wrote results to task_b/evaluation/results/main.jsonl
+[s100|none] 10 cases to run (80 skipped, already in JSONL)
+  [s100] 10/10 case_id=675
+[e2e|none] 10 cases to run (80 skipped, already in JSONL)
+  [e2e] 10/10 case_id=675
+
+Wrote results to task_b/evaluation/results/main.jsonl

@@ -12,3 +12,15 @@ agents/.venv/
 task_a/evaluation/output/
 
 cred.txt
+
+# UI local env (contains localhost dev URL, not for production)
+ui/.env.local
+
+# Evaluation run logs (verbose terminal output, not needed for reproducibility)
+task_b/evaluation/results/*.log
+task_b/evaluation/results/_chain.log
+task_b/evaluation/results/_full_run.log
+task_b/evaluation/results/aggregate.log
+
+# Backup / interim result files
+task_b/evaluation/results/*.bak

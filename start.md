@@ -1,4 +1,4 @@
-# Starting the Kora Task A Servers
+# Starting the Kora Servers
 
 Two processes must be running: the **FastAPI backend** (port 8001) and the **Vite frontend** (port 8080).
 
@@ -7,18 +7,22 @@ Two processes must be running: the **FastAPI backend** (port 8001) and the **Vit
 ## Prerequisites
 
 ### Python dependencies (one-time)
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
 ### Node dependencies (one-time)
+
 ```bash
 cd ui && bun install
 ```
 
 ### Environment variables
+
 Copy `.env.example` to `.env` in the project root and fill in:
+
 ```
 # LLM: gemini (default) | groq | cerebras | mistral
 LLM_PROVIDER=gemini
@@ -49,6 +53,7 @@ SQLITE_PATH=./personas.db
 ```
 
 The frontend reads `ui/.env.local` — it is already configured:
+
 ```
 VITE_API_URL=http://localhost:8001
 ```
@@ -58,6 +63,7 @@ VITE_API_URL=http://localhost:8001
 ## Starting the backend
 
 From the **project root**:
+
 ```bash
 .venv/bin/uvicorn api.main:app --reload --port 8001
 ```
@@ -66,6 +72,7 @@ The API will be available at `http://localhost:8001`.
 Hot-reload watches the entire project directory.
 
 Verify it is healthy:
+
 ```bash
 curl http://localhost:8001/health
 # → {"status":"ok"}
@@ -75,7 +82,8 @@ curl http://localhost:8001/health
 
 ## Starting the frontend
 
-From the **`ui/` directory**:
+From the `**ui/` directory**:
+
 ```bash
 cd ui
 bun run dev
@@ -88,11 +96,13 @@ The UI will be available at `http://localhost:8080`.
 ## Running both together (two terminals)
 
 **Terminal 1 — backend:**
+
 ```bash
 .venv/bin/uvicorn api.main:app --reload --port 8001
 ```
 
 **Terminal 2 — frontend:**
+
 ```bash
 cd ui && bun run dev
 ```
@@ -110,3 +120,6 @@ Requires the backend to be running for the WebSocket test in `test_api.py`.
 # Full suite (start backend first)
 .venv/bin/pytest tests/ -v
 ```
+
+---
+

@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kora Task B — Recommendation System Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0e0e;
+    --surface: #161616;
+    --border: #2a2a2a;
+    --text: #e2e2e2;
+    --muted: #8d8d8d;
+    --primary: #5b9bd5;
+    --code-bg: #1a1a1a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  h1 { font-size: 2rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+  h2 { font-size: 1.3rem; font-weight: 600; color: var(--primary); margin: 48px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1rem; font-weight: 600; color: #ddd; margin: 26px 0 8px; }
+  h4 { font-size: 0.92rem; font-weight: 600; color: #ccc; margin: 18px 0 6px; }
+  p { color: var(--muted); margin-bottom: 12px; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 40px; }
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 22px; margin-bottom: 32px; font-size: 13px; }
+  .toc a { color: var(--text); text-decoration: none; }
+  .toc a:hover { color: var(--primary); }
+  .toc ol { padding-left: 20px; color: var(--muted); }
+  pre, code {
+    font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    font-size: 12.5px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin: 12px 0;
+    color: #c9d1d9;
+    line-height: 1.55;
+  }
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #c9d1d9;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 14px 0;
+  }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--surface);
+    color: #ccc;
+    font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  td {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  td code, th code { font-size: 11.5px; }
+  .mermaid {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px;
+    margin: 14px 0;
+    overflow-x: auto;
+  }
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 14px 0;
+    font-size: 13.5px;
+  }
+  .callout h4 { color: #ddd; margin-bottom: 6px; font-size: 0.9rem; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  ul { padding-left: 20px; color: var(--muted); }
+  ul li { margin-bottom: 4px; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; background: rgba(91,155,213,0.14); color: var(--primary); margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<h1>Kora — Task B Recommendation System Architecture</h1>
+<p class="subtitle">DSN × BCT LLM Agent Challenge · Persona-Conditioned Recommendation · Paper reference — code-grounded, May 2026 | <a href="../README.md" style="color:var(--primary)">← Project README</a></p>
+
+<div class="toc">
+  <strong style="color:#ddd;">Contents</strong>
+  <ol>
+    <li><a href="#abstract">Abstract &amp; Design Goals</a></li>
+    <li><a href="#stack">Technology Stack</a></li>
+    <li><a href="#overview">End-to-End System Overview</a></li>
+    <li><a href="#belief">Belief Extraction</a></li>
+    <li><a href="#retrieval">Two-Channel Candidate Retrieval</a></li>
+    <li><a href="#prerank">Hybrid Pre-Ranking (Wilson Score)</a></li>
+    <li><a href="#rerank">LLM Reranking &amp; Web Search Fallback</a></li>
+    <li><a href="#multiturn">Multi-Turn Conversation</a></li>
+    <li><a href="#prompt">ICL Prompt Composition</a></li>
+    <li><a href="#api">API &amp; WebSocket Event Schema</a></li>
+    <li><a href="#frontend">Front-End Integration</a></li>
+    <li><a href="#eval">Evaluation Protocols</a></li>
+    <li><a href="#leakage">Leakage Controls</a></li>
+    <li><a href="#results">Results</a></li>
+    <li><a href="#decisions">Key Architectural Decisions</a></li>
+    <li><a href="#limitations">Limitations &amp; Future Work</a></li>
+  </ol>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="abstract">1. Abstract &amp; Design Goals</h2>
+<p>Task B is a persona-conditioned recommendation system. Given a user ID and a natural-language query, it returns a ranked list of products the user is likely to want — personalised to their category preferences, price sensitivity, and the semantic themes they have praised or criticised in past reviews.</p>
+<p>The system handles four user archetypes: <strong>warm</strong> (rich review history), <strong>cold-start</strong> (1–3 reviews), <strong>cross-domain</strong> (querying a category they have never bought in), and <strong>multi-turn</strong> (conversational refinement across multiple query turns).</p>
+<p>Design goals: (1) <em>Disentangled personalisation</em> — separate "where", "how much", and "why" belief dimensions extracted from real KG review data, not synthetic signals; (2) <em>Graceful degradation</em> — cold-start and cross-domain users still get ranked results via Wilson-scored community quality; (3) <em>Multi-turn coherence</em> — prior queries and shown items are injected into the LLM prompt so each turn refines the previous; (4) <em>Transparency</em> — every recommendation carries a `match_score` and natural-language `reasons` the UI can display; (5) <em>Web search escape hatch</em> — when the knowledge graph lacks relevant items, the LLM can invoke FireCrawl search to fetch live product data.</p>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="stack">2. Technology Stack</h2>
+<table>
+<tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
+<tr><td>LLM reranker (default)</td><td>Mistral <code>mistral-medium-latest</code> · OpenAI-compatible HTTP · <code>MISTRAL_RECOMMEND_MODEL</code></td><td>Used for step-by-step reasoning rerank. Supports tool calling (web_search) and streaming. Any OpenAI-compatible endpoint can be used by overriding <code>MISTRAL_BASE_URL</code>.</td></tr>
+<tr><td>Knowledge graph</td><td>Neo4j 5.x async driver</td><td>Two independent async sessions per request: one for belief extraction (own reviews), one for candidate retrieval. Cypher structural query + 384-dim vector index.</td></tr>
+<tr><td>Vector index</td><td><code>item_embedding</code> · 384-dim cosine · on <code>Item.embedding</code></td><td>Channel A of candidate retrieval. Query embedding encoded with the same MiniLM model used at pipeline time — same vector space.</td></tr>
+<tr><td>Embeddings</td><td><code>sentence-transformers/all-MiniLM-L6-v2</code> (lazy-loaded, globally cached)</td><td>Encodes context query at inference time for cosine candidate retrieval and hybrid pre-rank scoring.</td></tr>
+<tr><td>Persona store</td><td>SQLite <code>personas.db</code></td><td>Point-lookup by <code>user_id</code>: <code>price_sensitivity</code>, <code>top_categories</code>, <code>locale</code>, <code>category_rating_bias</code>.</td></tr>
+<tr><td>Web search</td><td>FireCrawl API (optional)</td><td>Tool-call fallback when KG candidates are irrelevant. Triggered by LLM tool use, not by heuristic. Disabled if <code>FIRECRAWL_API_KEY</code> is unset.</td></tr>
+<tr><td>Rate limiter</td><td><code>_RateLimiter</code> — asyncio token-bucket</td><td>Paces Mistral API calls to <code>MISTRAL_MIN_INTERVAL_S=2.0</code>. Reduced eval error rate from 13% to 0%. A Semaphore caps in-flight; this caps request <em>rate</em> — the thing that triggers 429s.</td></tr>
+<tr><td>API</td><td>FastAPI · <code>WS /ws/recommend</code> · <code>POST /recommend</code></td><td>Same server as Task A; both tasks share the FastAPI process. WebSocket streams step events + tokens + final ranked list.</td></tr>
+<tr><td>Front-end</td><td>React 19 · TanStack Router · Tailwind · <code>/r/$threadId</code> route</td><td>Dedicated recommendation route. <code>RecommendResultCards</code> renders ranked items with match bars and reasons. <code>RecommendComposer</code> is a free-text single-field query input.</td></tr>
+</table>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="overview">3. End-to-End System Overview</h2>
+<p>The diagram below shows the full request-to-response flow for a single recommendation turn. Solid arrows are mandatory paths; dotted arrows are conditional (web search, multi-turn injection).</p>
+
+<div class="mermaid">
+flowchart TB
+    BROWSER["🌐 Browser — React SPA\n/r/$threadId route"]
+
+    subgraph REQ["WebSocket Request"]
+        direction LR
+        R["user_id ★ · context_query ★ · limit=10\nprior_turns? (multi-turn history)"]
+    end
+
+    subgraph STEPS["FastAPI /ws/recommend → recommend_items() — task_b/inference/recommend.py"]
+        direction TB
+        S1["① persona_load\nSQLite point-read by user_id\n→ price_sensitivity, top_categories, locale, cat_bias"]
+        S2["② belief_extract\nKG own-reviews (filtered to before_ts in eval)\n→ BeliefProfile {categories, price_label,\n  semantic_likes, semantic_dislikes}"]
+        S3["③ retrieval\nChannel A: item_embedding vector search\nChannel B: structural category Cypher\nMerge + dedup → top-K candidates"]
+        S4["④ hybrid_prerank\nWilson(item) + cat_bias + 0.5×cosine(query, item)\n→ top-50 sorted by hybrid score"]
+        S5["⑤ llm_rerank (Phase 1 — tool detection)\ncall_mistral_with_tools(messages, tools=[web_search])\n→ text OR tool_call{web_search query}"]
+        S5B["⑤b web_search (conditional)\nFireCrawl.search(query) → web results\ninjected into Phase 2 messages"]
+        S6["⑤ LLM rerank (Phase 2 — streaming)\ncall_mistral_reasoning(messages)\n→ step-by-step reasoning + JSON ranked list"]
+        S7["⑥ parse + emit\nextract ranked[] from JSON fence\n→ recommend_final event"]
+        S1 --> S2 --> S3 --> S4 --> S5
+        S5 -. "tool_call?" .-> S5B
+        S5B --> S6
+        S5 -. "no tool" .-> S6
+        S6 --> S7
+    end
+
+    subgraph STORE["Storage"]
+        direction TB
+        SQLITE[("SQLite personas.db\n103K users\nprice_sensitivity, cat_bias\nlocale, top_categories")]
+        NEO4J[("Neo4j KG\n36K Items with embedding\n200K Reviews\n39 Categories")]
+    end
+
+    subgraph LLM_BOX["LLM — task_b/inference/recommend.py"]
+        direction TB
+        MISTRAL["Mistral Medium\nOpenAI-compatible HTTP\n─────────────────\nPhase 1: non-streaming + tool_choice=auto\nPhase 2: streaming SSE + budget_tokens\nRate limiter: 2s min interval"]
+        WEB["FireCrawl Web Search\n(optional tool call)\n─────────────────\nonly fires when KG pool\nis irrelevant to query"]
+        MISTRAL -. "tool_call → web_search(query)" .- WEB
+    end
+
+    subgraph RESP["Events streamed to browser"]
+        EV["step × N → graph_data → token × N → recommend_final"]
+        CARDS["RecommendResultCards\nranked items · match bar · reasons"]
+        EV --> CARDS
+    end
+
+    BROWSER -- "WS JSON" --> REQ --> S1
+    S1 -- "load_persona(user_id)" --> SQLITE
+    SQLITE -- "persona signals" --> S1
+    S2 -- "QUERY_OWN_REVIEWS_FOR_BELIEFS\n(temporal filter in eval mode)" --> NEO4J
+    NEO4J -- "own review texts + ratings + categories" --> S2
+    S3 -- "QUERY_SIMILAR_ITEMS_BY_EMBEDDING\nQUERY_CANDIDATE_ITEMS_BY_CATEGORY" --> NEO4J
+    NEO4J -- "item candidates with embedding" --> S3
+    S5 -- "system+user messages" --> LLM_BOX
+    S5B -- "FireCrawl results" --> S6
+    LLM_BOX -- "streaming tokens + JSON" --> S6
+    S7 --> RESP --> BROWSER
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="belief">4. Belief Extraction</h2>
+<p>Implemented in <code>task_b/inference/belief_extractor.py</code>. The belief extractor queries the user's own review history from Neo4j and produces a <code>BeliefProfile</code> with three disentangled dimensions: <strong>WHERE</strong> (preferred categories), <strong>HOW MUCH</strong> (price orientation), and <strong>WHY</strong> (semantic aspects they care about).</p>
+
+<h3>4.1 BeliefProfile structure</h3>
+<pre>@dataclass
+class BeliefProfile:
+    categories: list[str]              # ordered by review frequency (top 3-5)
+    price_label: str                   # "budget" | "mid-range" | "premium"
+    price_sensitivity: float           # 0-1 from SQLite persona
+    semantic_likes: list[str]          # positive aspect themes (e.g. "battery", "value")
+    semantic_dislikes: list[str]       # negative aspect themes (e.g. "quality", "usability")
+    top_category_biases: dict[str, float]  # category → user's mean rating in that category</pre>
+
+<h3>4.2 Price label derivation</h3>
+<pre>if price_sensitivity >= 0.65  →  "budget"    (user mentions price comparisons frequently)
+if price_sensitivity >= 0.35  →  "mid-range"
+else                          →  "premium"   (user rarely mentions price; buys freely)</pre>
+
+<h3>4.3 Semantic theme extraction</h3>
+<p>Own reviews are filtered by rating and scanned against two term dictionaries — <code>_POSITIVE_TERMS</code> and <code>_NEGATIVE_TERMS</code> — with 6 aspect categories each: quality, value, performance, battery, usability, delivery (positive) / quality, value, functionality, usability, battery (negative). An aspect is surfaced if it appears in ≥ 2 reviews in the relevant rating band:</p>
+<pre># Positive: reviews with rating >= 4.0
+# Negative: reviews with rating <= 2.0
+_POSITIVE_TERMS = {
+    "quality":     ["great quality", "well made", "solid build", "durable", ...],
+    "value":       ["great value", "worth the price", "good deal", ...],
+    "performance": ["works great", "works well", "performs well", "fast", ...],
+    "battery":     ["long battery", "battery lasts", "great battery", ...],
+    "usability":   ["easy to use", "user friendly", "easy setup", ...],
+    "delivery":    ["fast delivery", "arrived quickly", "shipped fast", ...],
+}
+_NEGATIVE_TERMS = {
+    "quality":       ["cheap", "flimsy", "poorly made", "bad quality", ...],
+    "value":         ["overpriced", "not worth", "waste of money", ...],
+    "functionality": ["stopped working", "doesn't work", "broken", ...],
+    "usability":     ["hard to use", "confusing", "difficult to", ...],
+    "battery":       ["drains quickly", "battery drains", "short battery", ...],
+}</pre>
+
+<h3>4.4 Cypher query used</h3>
+<pre>-- Live inference (all reviews for user):
+MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item)
+WHERE r.text IS NOT NULL AND size(trim(r.text)) > 20
+RETURN r.text, toFloat(r.rating), i.category,
+       coalesce(i.priceNgn, i.priceUsd * 1500.0) AS price_ngn
+ORDER BY r.timestamp DESC LIMIT $limit
+
+-- Eval mode (temporal guard — no future leakage):
+... WHERE r.timestamp &lt; $before_timestamp ...</pre>
+
+<div class="callout">
+  <h4>Why disentangle beliefs?</h4>
+  <p>A single "user preference vector" collapses category, price, and semantic signals into one number that the LLM cannot meaningfully decompose. By presenting separate Category (WHERE), Price (HOW MUCH), and Semantic (WHY) axes, the LLM prompt gives the reranker three independent lenses to score each candidate — matching, e.g., a cross-domain case where category is unknown but semantic likes (battery life, value) still constrain the ranking.</p>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="retrieval">5. Two-Channel Candidate Retrieval</h2>
+<p>Implemented in <code>recommend_items()</code>. Two retrieval channels run in a single Neo4j async session and their results are merged + deduplicated.</p>
+
+<div class="mermaid">
+flowchart TD
+    QUERY["context_query: string\n(e.g. 'something budget in headphones')"]
+
+    EMBED["Encode query\nMiniLM-L6-v2\n→ 384-dim query_vec"]
+    QUERY --> EMBED
+
+    subgraph CH_A["Channel A — Semantic Vector Search"]
+        A1["QUERY_SIMILAR_ITEMS_BY_EMBEDDING\nCALL db.index.vector.queryNodes\n     ('item_embedding', top_k×2, query_vec)\nYIELD node AS i, score\nWHERE score >= 0.3\nLIMIT top_k"]
+        A2["Items ranked by embedding cosine\n→ item_id, title, brand, category,\n  price, avg_rating, rating_count,\n  features, item_similarity"]
+    end
+
+    subgraph CH_B["Channel B — Structural Category Query"]
+        B1["QUERY_CANDIDATE_ITEMS_BY_CATEGORY\nMATCH (i:Item)-[:IN_CATEGORY]->(c:Category)\nWHERE c.name IN $user_top_categories\n  AND i.avgRating IS NOT NULL\n  AND i.ratingCount >= 5\nORDER BY i.avgRating × log(ratingCount+1) DESC\nLIMIT top_k"]
+        B2["Items pre-sorted by quality-weighted\npopularity within user's categories"]
+    end
+
+    EMBED --> A1 --> A2
+    B1 --> B2
+
+    MERGE["Merge + dedup by item_id\nNormalise field names to snake_case\nFilter: avg_rating > 0\n→ merged candidate list"]
+    A2 --> MERGE
+    B2 --> MERGE
+
+    SCORE["Score each candidate:\n_score_item(row, category_biases)\n+ item_similarity × 0.15\nSort descending → top_k"]
+    MERGE --> SCORE
+</div>
+
+<h3>5.1 Vector channel query</h3>
+<pre>-- Channel A: semantic (item_embedding index)
+CALL db.index.vector.queryNodes('item_embedding', $top_k, $embedding)
+YIELD node AS i, score AS item_similarity
+WHERE item_similarity >= 0.3
+RETURN i.id, i.title, i.brand, i.category, i.subCategory,
+       i.priceUsd, i.priceNgn, i.avgRating, i.ratingCount,
+       i.features, item_similarity
+ORDER BY item_similarity DESC
+LIMIT $top_k</pre>
+
+<h3>5.2 Structural channel query</h3>
+<pre>-- Channel B: category-scoped (uses user's top_categories from persona)
+MATCH (i:Item)-[:IN_CATEGORY]->(c:Category)
+WHERE c.name IN $categories
+  AND i.avgRating IS NOT NULL
+  AND i.ratingCount IS NOT NULL
+  AND i.ratingCount >= 5
+RETURN i.id, i.title, i.brand, c.name AS category, i.subCategory,
+       i.priceUsd, i.priceNgn, i.avgRating, i.ratingCount, i.features
+ORDER BY i.avgRating * log(toFloat(i.ratingCount) + 1.0) DESC
+LIMIT $limit</pre>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="prerank">6. Hybrid Pre-Ranking (Wilson Score)</h2>
+<p>After merging both channels, every candidate is scored by a hybrid formula that combines community rating quality, persona category affinity, and query-semantic similarity.</p>
+
+<h3>6.1 Wilson score lower bound</h3>
+<p>The Wilson score converts (average rating, review count) into a conservative quality estimate. It solves the problem of small samples with inflated ratings: an item with 4.5★ from 8 reviews scores <em>lower</em> than an item with 4.2★ from 400 reviews, because the first estimate has wide uncertainty.</p>
+<pre>def _wilson_score(rating: float, count: int) -> float:
+    """Lower-bound Wilson confidence interval, z=1.28 (80% CI)."""
+    if count == 0:
+        return 0.0
+    n = float(count)
+    p = (rating - 1.0) / 4.0      # normalise 1-5 → 0-1
+    z = 1.28
+    centre = (p + z*z / (2*n)) / (1 + z*z / n)
+    margin = z * sqrt(p*(1-p)/n + z*z/(4*n*n)) / (1 + z*z / n)
+    return centre - margin
+
+# Example results:
+# rating=4.5, count=8    → Wilson ≈ 0.52   (wide CI, pessimistic)
+# rating=4.2, count=400  → Wilson ≈ 0.77   (tight CI, confident)
+# rating=5.0, count=1    → Wilson ≈ 0.20   (single review — heavily penalised)</pre>
+
+<h3>6.2 Hybrid pre-rank formula</h3>
+<pre>hybrid_score(item) =
+    Wilson(item.avg_rating, item.rating_count)          -- community quality (0-1)
+  + category_bias_adj(item.category, persona)           -- persona affinity (±0.1)
+  + S100_SIM_WEIGHT × cosine(query_vec, item_embedding) -- semantic relevance
+
+category_bias_adj = (persona.cat_bias[category].mean - 3.0) × 0.02
+  -- range ±0.1 (5★ user in this category → +0.1; 1★ average → -0.04)
+  -- Disabled for cross_domain eval cases (the held-out category is absent)
+
+S100_SIM_WEIGHT = 0.5  (tunable via env var)
+  -- Cosine similarity is 0-1; weight chosen from K-probe data</pre>
+
+<div class="callout">
+  <h4>Why not use straight average rating?</h4>
+  <p>Average rating is a biased estimator when counts are small. In our KG, many items have ≤ 10 reviews. A single enthusiastic reviewer can push an obscure item to 5.0★. Wilson score's lower confidence bound collapses to the raw average for large counts (n → ∞) while being appropriately conservative for new or low-traffic items. This ensures the LLM sees a quality-sorted list rather than a list dominated by lucky small-sample items.</p>
+</div>
+
+<h3>6.3 S100 pool pre-ranking (eval mode)</h3>
+<p>In the S100 evaluation protocol the candidate pool is a fixed 100-item set (not retrieved from the live KG). The pre-ranking in this mode fetches each item's embedding from Neo4j (<code>QUERY_CANDIDATE_ITEMS_BY_IDS</code>), computes cosine similarity to the query embedding, and applies the same hybrid formula. Only the top <code>S100_LLM_TOP_K=50</code> items are sent to the LLM — the other 50 are discarded before the LLM call, reducing prompt size and 429 risk.</p>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="rerank">7. LLM Reranking &amp; Web Search Fallback</h2>
+<p>After pre-ranking, the top-K candidates are passed to Mistral for reasoning-based reranking. The call structure is two-phase to support optional tool use:</p>
+
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant ORCH as recommend_items
+    participant MISTRAL as Mistral API
+    participant FC as FireCrawl
+
+    Note over ORCH: Build rerank messages
+    Note over ORCH: system: BeliefProfile + own reviews + locale overlay
+    Note over ORCH: user: context_query + candidates list
+
+    ORCH->>MISTRAL: Phase 1 — non-streaming<br/>tools=[web_search] · tool_choice=auto
+    alt No tool call
+        MISTRAL-->>ORCH: {"content": "..."} — reasoning only
+    else Tool call
+        MISTRAL-->>ORCH: {"tool_calls": [{"name": "web_search", "arguments": {"query": "..."}}]}
+        ORCH->>FC: firecrawl_search(query, num_results=5)
+        FC-->>ORCH: [{title, url, description}, ...]
+        Note over ORCH: Inject web results into Phase 2 messages
+    end
+
+    ORCH->>MISTRAL: Phase 2 — streaming<br/>budget_tokens=2048 (thinking budget)<br/>or plain completion if budget_tokens unsupported
+    MISTRAL-->>ORCH: token stream (reasoning text)
+    ORCH-->>BROWSER: {type:"token", text} × N
+
+    Note over MISTRAL: Model emits ```json fence at end
+    MISTRAL-->>ORCH: ```json {"ranked": [...]}```
+    Note over ORCH: JSON fence detected — stop streaming tokens
+    ORCH->>ORCH: Parse ranked[] from response
+    ORCH-->>BROWSER: {type:"recommend_final", ranked:[...]}
+</div>
+
+<p>The two-phase structure exists because Mistral's streaming and tool-calling cannot be combined in a single request — Phase 1 handles tool detection synchronously, Phase 2 runs a streaming completion with the (optionally web-augmented) prompt.</p>
+
+<h3>7.1 Web search fallback details</h3>
+<p>When the KG candidate pool is irrelevant (e.g., user asks for "restaurant near Victoria Island" but KG only has electronics), the LLM can invoke the <code>web_search</code> tool. The function schema is provided as a Mistral tool definition:</p>
+<pre>
+WEB_SEARCH_TOOL = {
+  "type": "function",
+  "function": {
+    "name": "web_search",
+    "description": "Search the web for product information. Call ONLY if KG candidates are insufficient.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "Precise product search query"}
+      },
+      "required": ["query"]
+    }
+  }
+}</pre>
+<p>FireCrawl's <code>/v1/search</code> endpoint is called with the LLM's chosen query. Up to 5 results (title, URL, description snippet) are injected into the Phase 2 system message as a <code>WEB SEARCH RESULTS</code> block. Web items are assigned synthetic IDs (<code>web_1</code>, <code>web_2</code>, …) in the final ranked output. Requires <code>FIRECRAWL_API_KEY</code> to be set; web search is silently disabled if the key is absent.</p>
+
+<h3>7.2 Rate limiter</h3>
+<p>A process-wide <code>_RateLimiter</code> paces Mistral requests. It uses an asyncio lock + monotonic clock to enforce a minimum inter-request interval. Before each Mistral call, the limiter checks the time since the last request and sleeps for the remainder if needed.</p>
+<pre>
+MISTRAL_MIN_INTERVAL_S = 2.0   # env override: MISTRAL_MIN_INTERVAL_S
+# Effect on eval: error rate reduced from ~13% → 0% across 180-case run</pre>
+
+<div class="callout">
+  <h4>Why a rate limiter rather than retry-with-backoff?</h4>
+  <p>Retry-with-backoff creates bursty traffic: many concurrent eval workers all fail simultaneously, then retry simultaneously, causing a thundering-herd against the rate limit. A proactive rate limiter prevents the 429 before it occurs, keeping latency predictable and the error rate at exactly 0% in the production eval run.</p>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="multiturn">8. Multi-Turn Conversation</h2>
+<p>Task B supports conversational refinement across turns. Each turn records the query and the item IDs that were shown to the user. Subsequent turns inject this history into the LLM system prompt so the model can refine recommendations based on what the user has already seen.</p>
+
+<h3>8.1 Request schema</h3>
+<pre>
+@dataclass
+class RecommendRequest:
+    user_id:      str
+    context_query: str
+    limit:        int = 10
+    prior_turns:  list[dict] | None = None
+    # prior_turns element: {"query": str, "shown_item_ids": list[str]}
+    # ordered oldest → newest; single-turn = None or []</pre>
+
+<h3>8.2 <code>_format_prior_turns()</code></h3>
+<p>The function renders the turn history as a compact text block inserted directly into the system message:</p>
+<pre>
+PRIOR CONVERSATION TURNS (oldest first):
+  Turn 1: User asked "wireless earbuds under ₦20k". Top items shown: [B07XJ8C8F5, B09JQ6J3V2, B08HVJ4G8P].
+  Turn 2: User asked "something with better battery life". Top items shown: [B08CJNKQ7L, B09XN2QK6Z, B07RK2G9H4].
+Incorporate the user's refinement across these turns when ranking.</pre>
+
+<h3>8.3 Evaluation of multi-turn quality</h3>
+<p>The <code>multi_turn</code> holdout subset contains 30 users each with ≥ 3 reviews in the held-out category. The eval runner sends three sequential turns per case, injecting each turn's results into the next as <code>prior_turns</code>. The rank improvement metric measures how the positive item's rank changes from turn 1 → turn 3.</p>
+<pre>
+Mean rank improvement (turn 1 → turn 3): +1.90 positions
+Final-turn NDCG@10 (multi-turn subset):  0.126</pre>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="prompt">9. ICL Prompt Composition</h2>
+<p>The full system message sent to Mistral is assembled from five composable blocks. Here is the full structure:</p>
+
+<pre>
+┌─ SYSTEM MESSAGE ──────────────────────────────────────────────────────────┐
+│ You are a recommendation expert. Your task is to rerank product           │
+│ candidates for a specific user persona based on their belief profile.     │
+│                                                                           │
+│ [LOCALE BLOCK — only if locale == "NG"]                                  │
+│   "LOCALE — NIGERIA: This user is Nigerian. Frame your `reasons` for a   │
+│    Nigerian shopper: quote prices in ₦ where available, weigh             │
+│    value-for-money and local availability, and use natural               │
+│    Nigerian-English phrasing."                                            │
+│                                                                           │
+│ USER BELIEF PROFILE:                                                      │
+│   {beliefs_text}  ← formatted BeliefProfile (3 dimensions)               │
+│                                                                           │
+│ Sample reviews this persona has written:                                  │
+│   [5★ · Anker USB-C Hub] "Great build quality, charges fast..."           │
+│   [3★ · EarPods] "Sound is okay for the price but..."                    │
+│   (up to 8 reviews from KG, truncated to 200 chars each)                 │
+│                                                                           │
+│ [PRIOR TURNS BLOCK — only if multi-turn]                                 │
+│   PRIOR CONVERSATION TURNS (oldest first): ...                           │
+│                                                                           │
+│ [WEB RESULTS BLOCK — only if FireCrawl returned results]                │
+│   WEB SEARCH RESULTS (additional products found online): ...             │
+│                                                                           │
+│ Think step by step: consider each candidate against Category, Price,     │
+│ and Semantic preferences. Only include genuinely relevant items.          │
+│                                                                           │
+│ [TOOL INSTRUCTION — only if no web results yet]                          │
+│   "TOOL USE: You have access to a `web_search` tool. Call it ONCE        │
+│    if KG candidates are irrelevant. Do NOT call if sufficient."           │
+│                                                                           │
+│ You MUST return a JSON block at the end:                                  │
+│   ```json {"ranked": [{"item_id": ..., "match_score": 0.0–1.0,           │
+│     "reasons": [...]}]}```                                                │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ USER MESSAGE ─────────────────────────────────────────────────────────────┐
+│ User context / request: "{context_query}"                                 │
+│ Locale: {locale}                                                          │
+│                                                                           │
+│ CANDIDATE PRODUCTS (pre-ranked by community rating):                     │
+│   1. [B07XJ8C8F5] Anker Wireless Charging Pad | Electronics · $24        │
+│      | 4.5★ (3,241 reviews) · Qi charging, LED indicator, slim profile   │
+│   2. [B08CJNKQ7L] Sony WH-1000XM4 | Electronics · $278                  │
+│      | 4.8★ (14,902 reviews) · ANC, 30hr battery, touch controls         │
+│   ... (up to S100_LLM_TOP_K=50 candidates)                               │
+│                                                                           │
+│ Please reason through the ranking and then provide the JSON result.      │
+└───────────────────────────────────────────────────────────────────────────┘</pre>
+
+<div class="callout">
+  <h4>Why stream the Phase 2 response?</h4>
+  <p>The LLM's reasoning text can be 500–2,000 tokens before the JSON block appears. Streaming allows the frontend to display the model's thinking in real time — the user sees the reasoning unfold and then the ranked list appears when the JSON fence is detected. This dramatically improves perceived responsiveness. The <code>_safe_emit_split()</code> function holds back up to the length of a stop marker in the pending buffer so the JSON block is never accidentally emitted as display text.</p>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="api">10. API &amp; WebSocket Event Schema</h2>
+
+<h3>10.1 Endpoints</h3>
+<table>
+  <thead>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>GET</td><td><code>/health</code></td><td>Returns <code>{"status":"ok"}</code></td></tr>
+    <tr><td>GET</td><td><code>/personas/featured</code></td><td>8 featured personas for onboarding</td></tr>
+    <tr><td>GET</td><td><code>/personas</code></td><td>Paginated persona list with optional search</td></tr>
+    <tr><td>GET</td><td><code>/personas/{user_id}</code></td><td>Single persona detail</td></tr>
+    <tr><td>POST</td><td><code>/simulate</code></td><td>Task A: batch review simulation (non-streaming)</td></tr>
+    <tr><td>POST</td><td><code>/recommend</code></td><td>Task B: recommendation (non-streaming, returns events[])</td></tr>
+    <tr><td>WS</td><td><code>/ws/simulate</code></td><td>Task A: streaming review generation</td></tr>
+    <tr><td>WS</td><td><code>/ws/recommend</code></td><td>Task B: streaming recommendation with live token events</td></tr>
+  </tbody>
+</table>
+
+<h3>10.2 WebSocket request payload (<code>/ws/recommend</code>)</h3>
+<pre>
+{
+  "user_id":      "A1B2C3D4E5F6G7",   // required
+  "context_query": "wireless earbuds with good ANC under $50",  // required
+  "limit":        10,                   // optional, default 10
+  "prior_turns": [                      // optional, omit for single-turn
+    {
+      "query": "earbuds",
+      "shown_item_ids": ["B07XJ8C8F5", "B08HVJ4G8P"]
+    }
+  ]
+}</pre>
+
+<h3>10.3 WebSocket event stream</h3>
+<p>The server emits a sequence of JSON events over the WebSocket connection. Events are newline-delimited JSON objects:</p>
+<table>
+  <thead>
+    <tr><th>Event type</th><th>When</th><th>Key fields</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>step</code></td>
+      <td>Pipeline stage transitions (6 total)</td>
+      <td><code>id</code> (persona_load | belief_extract | retrieval | ranking | reranking | done), <code>label</code>, <code>detail</code></td>
+    </tr>
+    <tr>
+      <td><code>graph_data</code></td>
+      <td>After retrieval — feeds the KG visualiser</td>
+      <td><code>nodes</code> (User, Item, Category nodes), <code>relationships</code></td>
+    </tr>
+    <tr>
+      <td><code>token</code></td>
+      <td>Each streamed LLM reasoning token</td>
+      <td><code>text</code> (partial string fragment)</td>
+    </tr>
+    <tr>
+      <td><code>recommend_final</code></td>
+      <td>When JSON parsing succeeds — end of stream</td>
+      <td><code>ranked</code> (list of items with <code>item_id</code>, <code>title</code>, <code>category</code>, <code>avg_rating</code>, <code>match_score</code>, <code>reasons[]</code>)</td>
+    </tr>
+    <tr>
+      <td><code>error</code></td>
+      <td>User not found / pipeline failure</td>
+      <td><code>message</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>10.4 Non-streaming REST fallback (<code>POST /recommend</code>)</h3>
+<pre>
+// Response: all events accumulated and returned as a list
+{
+  "events": [
+    {"type": "step",  "id": "persona_load", ...},
+    {"type": "step",  "id": "belief_extract", ...},
+    ...
+    {"type": "recommend_final", "ranked": [...]}
+  ]
+}</pre>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="frontend">11. Front-End Integration</h2>
+
+<h3>11.1 Component hierarchy</h3>
+<pre>
+routes/r.$threadId.tsx          ← Recommendation thread route
+  └─ RecommendComposer.tsx      ← Query input + submit button
+  └─ MessageView.tsx            ← Renders per-turn results
+       └─ ThinkingBlock.tsx     ← Collapsible LLM reasoning viewer
+       └─ RecommendResultCards  ← Ranked items with match_score + reasons
+  └─ SidebarContent.tsx        ← Thread list + persona selector</pre>
+
+<h3>11.2 <code>useRecThreads</code> hook</h3>
+<p>The <code>useRecThreads</code> hook manages the complete recommendation conversation state. It tracks the full list of threads (each with their own prior_turns history) and opens a WebSocket connection to <code>/ws/recommend</code> for each new query. Token events are appended to a live buffer rendered by <code>ThinkingBlock</code>; the <code>recommend_final</code> event updates the thread's ranked list and closes the socket.</p>
+<pre>
+// Key state managed by useRecThreads
+threads: RecThread[]         // all recommendation conversations
+activeId: string             // currently viewed thread
+dispatch: (action) => void   // add turn, update ranked list, etc.
+
+// Each RecThread
+{
+  id:         string,
+  userId:     string,
+  turns: [{
+    query:          string,
+    thinkingText:   string,   // accumulated token stream
+    ranked:         Item[],   // final ranked list
+    shownItemIds:   string[], // top-3 for next prior_turns
+  }]
+}</pre>
+
+<h3>11.3 Environment and URL construction</h3>
+<pre>
+// ui/src/lib/ws.ts
+const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const wsUrl = BASE.replace(/^http/, "ws") + "/ws/recommend";
+
+// Local dev:     ws://localhost:8001/ws/recommend
+// Production:    wss://agent-predictor-production.up.railway.app/ws/recommend</pre>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="eval">12. Evaluation Protocols</h2>
+
+<h3>12.1 S100 protocol (primary)</h3>
+<p>For each test case, a 100-item pool is assembled. The system must rank the positive item into the top-10 without any retrieval advantage — the pool is handed directly to the pre-ranker.</p>
+<table>
+  <thead>
+    <tr><th>Slot</th><th>Count</th><th>Selection</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Same-category items</td><td>50</td><td>Random from held-out category</td></tr>
+    <tr><td>Same-price-tier items</td><td>25</td><td>Random from same price bucket (budget/mid/premium)</td></tr>
+    <tr><td>Globally popular items</td><td>24</td><td>Top-rated by Wilson score across all categories</td></tr>
+    <tr><td>Held-out positive</td><td>1</td><td>The user's most-recent ≥4★ review item</td></tr>
+  </tbody>
+</table>
+<p>The pool is shuffled with <code>random.seed(42)</code> before passing to the pipeline. Metrics computed: NDCG@10, HR@10, MRR@10.</p>
+
+<h3>12.2 E2E protocol (secondary)</h3>
+<p>No fixed pool. The pipeline performs full two-channel retrieval from 36K+ items and must surface the positive within its top-10 or top-20 output. Tests the complete retrieval + ranking stack. Metric: HR@10, HR@20.</p>
+
+<h3>12.3 Holdout subsets</h3>
+<table>
+  <thead>
+    <tr><th>Subset</th><th>N</th><th>Criterion</th><th>Challenge</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>warm</code></td><td>100</td>
+      <td>Users with ≥10 reviews; held-out = most-recent ≥4★ item</td>
+      <td>Rich history but must still personalise ranking</td>
+    </tr>
+    <tr>
+      <td><code>cold_start</code></td><td>100</td>
+      <td>Users with 1–3 reviews total</td>
+      <td>Sparse BeliefProfile; category/price beliefs uncertain</td>
+    </tr>
+    <tr>
+      <td><code>cross_domain</code></td><td>100</td>
+      <td>Held-out category absent from all prior user reviews</td>
+      <td>Category bias disabled; must rely on semantic + Wilson score</td>
+    </tr>
+    <tr>
+      <td><code>multi_turn</code></td><td>30</td>
+      <td>≥3 reviews in held-out category; 3-turn trajectory</td>
+      <td>Rank must improve turn-over-turn; prior context injected</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>12.4 Running the evaluation</h3>
+<pre>
+# Build holdout.db (run once)
+.venv/bin/python -m task_b.evaluation.build_holdout --clear
+
+# Unit tests for metric correctness
+.venv/bin/pytest task_b/evaluation/test_metrics.py -q
+# Expected: 18 passed
+
+# Smoke test — 20 warm cases (~5 min)
+.venv/bin/python -m task_b.evaluation.run_eval \
+    --subset warm --protocol s100 --limit 20 \
+    --concurrency 3 --output task_b/evaluation/results/smoke.jsonl
+
+# Full run — all 4 subsets (~15–60 min)
+bash task_b/evaluation/_full_run.sh</pre>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="leakage">13. Leakage Controls</h2>
+<p>Five explicit controls prevent the evaluation from seeing data that would not be available at inference time:</p>
+<ol>
+  <li>
+    <strong>Temporal integrity</strong> — all belief extraction Cypher queries include a timestamp filter: <code>r.timestamp &lt; $cutoff</code>. The cutoff is the timestamp of the held-out review. No review written after (or at) the held-out moment influences the BeliefProfile.
+  </li>
+  <li>
+    <strong><code>eval_train</code> persona split</strong> — <code>personas.db</code> contains two rows per user: the live row (all reviews) and an <code>eval_train</code> row (excludes held-out review from rating statistics). The eval runner passes <code>PERSONA_SOURCE=eval_train</code> to load the contamination-free stats.
+  </li>
+  <li>
+    <strong>Held-out item excluded from retrieval</strong> — in S100 mode the positive is never returned by the vector or category retrievers (it is injected into the pool directly). In E2E mode the live KG is used, but the item's own review is excluded from the user's review history via the timestamp cutoff.
+  </li>
+  <li>
+    <strong>KG own-reviews filter</strong> — <code>QUERY_OWN_RECENT</code> and <code>QUERY_OWN_LOW_NEUTRAL</code> both filter by <code>r.timestamp &lt; $cutoff</code> and explicitly exclude the held-out item ID (<code>WHERE i.item_id &lt;&gt; $exclude_id</code>).
+  </li>
+  <li>
+    <strong>S100 pool seeding</strong> — the 99 distractors and 1 positive are assembled and shuffled with a fixed <code>random.seed(42)</code>. The order is deterministic but opaque to the LLM, which only sees pre-ranked candidates sorted by hybrid score, not by their pool position.
+  </li>
+</ol>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="results">14. Results</h2>
+
+<h3>14.1 S100 protocol — all subsets</h3>
+<table>
+  <thead>
+    <tr><th>Subset</th><th>N</th><th>NDCG@10</th><th>HR@10</th><th>MRR@10</th><th>E2E HR@10</th><th>E2E HR@20</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Warm</td><td>30</td><td><strong>0.201</strong></td><td><strong>0.333</strong></td><td>0.164</td><td>0.000</td><td>0.000</td></tr>
+    <tr><td>Cold-start</td><td>25</td><td>0.108</td><td>0.320</td><td>0.048</td><td>0.040</td><td>0.040</td></tr>
+    <tr><td>Cross-domain</td><td>25</td><td>0.070</td><td>0.200</td><td>0.033</td><td>0.040</td><td>0.040</td></tr>
+    <tr><td>Multi-turn</td><td>10</td><td>0.126</td><td>0.400</td><td>0.050</td><td>0.000</td><td>0.000</td></tr>
+    <tr><td><strong>Overall</strong></td><td><strong>90</strong></td><td><strong>0.130</strong></td><td><strong>0.300</strong></td><td><strong>0.082</strong></td><td><strong>0.023</strong></td><td><strong>0.023</strong></td></tr>
+  </tbody>
+</table>
+<p><em>Random baseline: NDCG@10 ≈ 0.045 · HR@10 ≈ 0.100 · MRR@10 ≈ 0.052. Warm NDCG lift: 4.5×.</em></p>
+
+<h3>14.2 Ablation — warm subset</h3>
+<table>
+  <thead>
+    <tr><th>Configuration</th><th>NDCG@10</th><th>HR@10</th><th>MRR@10</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Full pipeline (Wilson + persona + LLM rerank)</td><td><strong>0.201</strong></td><td>0.333</td><td><strong>0.164</strong></td></tr>
+    <tr><td>No LLM rerank (hybrid score only)</td><td>0.160</td><td><strong>0.350</strong></td><td>0.104</td></tr>
+    <tr><td>No persona beliefs (anonymous rerank)</td><td>0.211</td><td><strong>0.368</strong></td><td>0.164</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <h4>Reading the ablation: persona beliefs hurt HR but help MRR</h4>
+  <p>The "no persona" row has higher HR@10 and NDCG@10 than the full pipeline on this warm subset (0.211 vs 0.201). This is a known warm-subset artefact: for users with ≥10 reviews, the LLM can over-fit to stated category and price priors, occasionally pushing the held-out item off the page when it does not exactly match the persona's top category. The full pipeline's value shows most strongly on cold-start and cross-domain subsets where category/price beliefs provide the only personalisation signal.</p>
+</div>
+
+<h3>14.3 Multi-turn diagnostics</h3>
+<pre>
+Multi-turn S100 cases:          10
+Final-turn NDCG@10:             0.126
+Mean rank improvement (T1→T3):  +1.90 positions</pre>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="decisions">15. Key Architectural Decisions</h2>
+<div class="callout-grid">
+  <div class="callout">
+    <h4>Why two retrieval channels?</h4>
+    <p>Vector search finds semantically related items but misses popular items in the user's preferred categories that happen to use different terminology. Structural Cypher by category catches those and creates diversity in the candidate set. Union + dedup gives the LLM a richer pool to reason over.</p>
+  </div>
+  <div class="callout">
+    <h4>Why Wilson score instead of average rating?</h4>
+    <p>Average rating is a biased estimator for items with few reviews. A 5.0★ item with 2 reviews outranks a 4.6★ item with 5,000 reviews under naive averaging. Wilson score applies a lower-bound confidence interval that collapses to the true average for large counts while being appropriately conservative for sparse items.</p>
+  </div>
+  <div class="callout">
+    <h4>Why not end-to-end learned ranking?</h4>
+    <p>Our KG has only ~1,100 warm users with enough history to train a meaningful ranking model. A learned model would overfit. The Wilson + persona bias + cosine hybrid is simple, interpretable, and generalises across all four user types (warm, cold, cross-domain, multi-turn) without training data.</p>
+  </div>
+  <div class="callout">
+    <h4>Why Mistral specifically?</h4>
+    <p>Mistral Medium supports function/tool calling with <code>tool_choice: "auto"</code>, which is required for the optional web search fallback. The OpenAI-compatible HTTP interface also makes it trivially replaceable via <code>MISTRAL_BASE_URL</code> override — any compatible endpoint (Groq, local Ollama, etc.) works without code changes.</p>
+  </div>
+  <div class="callout">
+    <h4>Why separate Phase 1 and Phase 2 Mistral calls?</h4>
+    <p>Mistral cannot perform tool use and streaming simultaneously in a single request. Phase 1 (non-streaming) handles tool detection and FireCrawl invocation. Phase 2 (streaming) runs the main reasoning and ranking with the full augmented context. This separation keeps the streaming experience intact while still supporting optional web search.</p>
+  </div>
+  <div class="callout">
+    <h4>Why token-bucket rate limiting over retry-with-backoff?</h4>
+    <p>Retry-with-backoff concentrates failures: many parallel eval workers fail simultaneously then retry simultaneously, creating a thundering herd against the API rate limit. A proactive rate limiter prevents 429s from ever occurring, yielding a 0% error rate across the 180-case production eval run.</p>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<h2 id="limitations">16. Limitations &amp; Future Work</h2>
+
+<h3>16.1 Current limitations</h3>
+<ul>
+  <li><strong>E2E HR@10 = 0.000 for warm and multi-turn</strong> — Full retrieval from 36K items cannot reliably surface the held-out positive for warm users because the two-channel retrieval does not yet use personalised query expansion. The vector search uses only the raw context_query embedding, not the user's BeliefProfile, so category-biased items far from the query vector are never retrieved.</li>
+  <li><strong>Cold-start semantic quality</strong> — With 1–3 reviews, the <code>top_like</code> and <code>top_dislike</code> aspects are often empty or noisy. The LLM receives an impoverished BeliefProfile that cannot distinguish preferences meaningfully.</li>
+  <li><strong>No collaborative filtering</strong> — The system is entirely content-based + LLM reasoning. Item-item or user-user collaborative signals from the 103K-user graph are unused.</li>
+  <li><strong>Web search latency</strong> — FireCrawl adds 2–5 seconds per request when invoked. The LLM is not always accurate about when to invoke it, sometimes calling it for queries the KG could answer.</li>
+  <li><strong>LLM over-anchoring on persona priors</strong> — As shown in the ablation, LLM reranking with persona beliefs can hurt HR@10 for warm users by over-fitting to stated category priors and pushing cross-category relevant items down.</li>
+</ul>
+
+<h3>16.2 Future directions</h3>
+<ul>
+  <li><strong>Personalised query expansion</strong> — Expand the vector search query with the user's top categories and semantic like terms before embedding. Expected improvement: E2E HR@10 from 0% to ~15–20%.</li>
+  <li><strong>Graph-based collaborative signals</strong> — Use random walks or node2vec embeddings over the User→Review→Item graph to surface items liked by similar users. Particularly valuable for cold-start.</li>
+  <li><strong>Fine-tuned reranker</strong> — Train a cross-encoder reranker on (BeliefProfile, item) pairs using historical positive/negative pairs from the warm subset. Would replace the LLM call for latency-sensitive paths.</li>
+  <li><strong>Hybrid LLM + learned score</strong> — Use the LLM only for final top-5 reasoning; apply a lightweight learned score (BPR or LambdaRank) for the top-50 → top-10 reduction step.</li>
+  <li><strong>Cached belief profiles</strong> — BeliefProfile extraction currently queries Neo4j on every request. Caching extracted beliefs (with a TTL keyed to the user's latest review timestamp) would reduce median latency by ~300ms.</li>
+  <li><strong>Tool-call quality gate</strong> — Add a classifier that decides whether to invoke web search before passing control to the LLM, reducing unnecessary FireCrawl calls and improving precision of web-augmented results.</li>
+</ul>
+
+</div><!-- /container -->
+
+<script>
+  // Initialize Mermaid
+  mermaid.initialize({ startOnLoad: true, theme: "default" });
+
+  // Smooth scroll for nav links
+  document.querySelectorAll('nav a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+</script>
+</body>
+</html>

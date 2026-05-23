@@ -57,13 +57,19 @@ def _item_price_label(price_usd: float | None, price_ngn: float | None) -> str:
     return "premium"
 
 
-def _build_context_query(category: str, price_label: str, subset: str) -> str:
+def _build_context_query(category: str, price_label: str, subset: str,
+                         top_like: str | None = None) -> str:
     cat = category or "general"
+    # top_like is a persona aspect ("long battery life", "great value") — never an
+    # item title, so injecting it keeps the query leakage-safe while making the
+    # persona's preference concrete enough to discriminate within a category.
+    like_part = f" — I usually care about {top_like}" if top_like else ""
     if subset == "cross_domain":
-        return f"I want to try something from a category I don't usually buy from: {cat}"
+        return (f"I want to try something from a category I don't usually buy from: "
+                f"{cat}{like_part}")
     if price_label == "unknown":
-        return f"Recommend something good in {cat}"
-    return f"I want something {price_label} in {cat}"
+        return f"Recommend something good in {cat}{like_part}"
+    return f"I want something {price_label} in {cat}{like_part}"
 
 
 def _build_multiturn_queries(category: str, price_label: str, top_like: str | None) -> tuple[str, str, str]:
@@ -393,13 +399,15 @@ async def _build_warm_or_cold(session, user_id: str, subset: str) -> dict | None
     pool = await _sample_pool(session, user_id=user_id, positive=pos, before_ts=before_ts)
     if len(pool) < POOL_SIZE:
         return None
+    prior_reviews = await _fetch_many(session, Q_USER_REVIEWS_BEFORE, user_id=user_id, before_ts=before_ts)
+    top_like = _top_like_from_reviews(prior_reviews)
     tier = _item_price_label(pos.get("price_usd"), pos.get("price_ngn"))
     return {
         "user_id":       user_id,
         "item_id":       pos["item_id"],
         "neg_item_ids":  pool,
         "before_ts":     before_ts,
-        "context_query": _build_context_query(pos["category"], tier, subset),
+        "context_query": _build_context_query(pos["category"], tier, subset, top_like),
         "subset":        subset,
         "locale":        pos.get("locale"),
         "platform":      pos.get("platform"),
@@ -418,13 +426,15 @@ async def _build_cross_domain(session, user_id: str) -> dict | None:
     pool = await _sample_pool(session, user_id=user_id, positive=pos, before_ts=before_ts)
     if len(pool) < POOL_SIZE:
         return None
+    prior_reviews = await _fetch_many(session, Q_USER_REVIEWS_BEFORE, user_id=user_id, before_ts=before_ts)
+    top_like = _top_like_from_reviews(prior_reviews)
     tier = _item_price_label(pos.get("price_usd"), pos.get("price_ngn"))
     return {
         "user_id":       user_id,
         "item_id":       pos["item_id"],
         "neg_item_ids":  pool,
         "before_ts":     before_ts,
-        "context_query": _build_context_query(pos["category"], tier, "cross_domain"),
+        "context_query": _build_context_query(pos["category"], tier, "cross_domain", top_like),
         "subset":        "cross_domain",
         "locale":        pos.get("locale"),
         "platform":      pos.get("platform"),

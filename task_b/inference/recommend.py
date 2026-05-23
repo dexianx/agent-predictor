@@ -52,9 +52,37 @@ MISTRAL_RECOMMEND_MODEL = os.environ.get("MISTRAL_RECOMMEND_MODEL",
 MISTRAL_BUDGET_TOKENS = int(os.environ.get("MISTRAL_BUDGET_TOKENS", "2048"))
 FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 
+# Eval-mode tuning knobs
+MISTRAL_MIN_INTERVAL_S = float(os.environ.get("MISTRAL_MIN_INTERVAL_S", "2.0"))
+S100_LLM_TOP_K = int(os.environ.get("S100_LLM_TOP_K", "50"))
+S100_SIM_WEIGHT = float(os.environ.get("S100_SIM_WEIGHT", "0.5"))
+
 _driver = None
 _driver_loop_id = None
 _embedder = None
+
+
+class _RateLimiter:
+    """Process-wide min-interval pacer so concurrent eval workers don't burst
+    the Mistral API. A Semaphore caps in-flight requests; this caps request
+    *rate* — the thing that actually triggers 429s."""
+
+    def __init__(self, min_interval_s: float):
+        self.min_interval = min_interval_s
+        self._lock = asyncio.Lock()
+        self._next_at = 0.0
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = asyncio.get_event_loop().time()
+            wait = self._next_at - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+                now = asyncio.get_event_loop().time()
+            self._next_at = now + self.min_interval
+
+
+_mistral_limiter = _RateLimiter(MISTRAL_MIN_INTERVAL_S)
 
 
 def get_driver():
@@ -134,6 +162,35 @@ def _score_item(row: dict, category_biases: dict[str, float]) -> float:
     if cat and cat in category_biases:
         cat_adj = (category_biases[cat] - 3.0) * 0.02  # ±0.1 at most
     return base + cat_adj
+
+
+def _cosine(a, b) -> float:
+    if not a or not b:
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / math.sqrt(na * nb)
+
+
+def _hybrid_prerank_score(
+    row: dict,
+    category_biases: dict[str, float],
+    *,
+    use_category_bias: bool = True,
+) -> float:
+    """Combine Wilson community score, persona category bias, and query↔item
+    semantic similarity into a single pre-rank score for the S100 pool."""
+    biases = category_biases if use_category_bias else {}
+    base = _score_item(row, biases)
+    sim = float(row.get("item_similarity") or 0.0)
+    return base + S100_SIM_WEIGHT * sim
 
 
 # ── Candidate retrieval ────────────────────────────────────────────────────────
@@ -263,7 +320,8 @@ RETURN i.id            AS item_id,
        i.priceNgn      AS price_ngn,
        i.avgRating     AS avg_rating,
        i.ratingCount   AS rating_count,
-       i.features      AS features
+       i.features      AS features,
+       i.embedding     AS embedding
 """
 
 
@@ -297,6 +355,7 @@ async def _fetch_items_by_ids(driver, item_ids: list[str]) -> list[dict]:
             "rating_count": int(row.get("rating_count") or 0),
             "features":     row.get("features") or [],
             "item_similarity": 0.0,
+            "embedding":    row.get("embedding"),
         })
     return out
 
@@ -481,7 +540,7 @@ def _build_rerank_messages(
     own_block = ""
     if own_reviews:
         parts = []
-        for r in own_reviews[:6]:
+        for r in own_reviews[:8]:
             rating = r.get("rating") or "?"
             item   = r.get("item_name") or "unknown"
             text   = (r.get("text") or "")[:200]
@@ -521,7 +580,15 @@ def _build_rerank_messages(
 
     prior_block = _format_prior_turns(prior_turns)
 
-    system_msg = f"""You are a recommendation expert. Your task is to rerank product candidates for a specific user persona based on their belief profile.
+    locale_block = ""
+    if (locale or "").upper() in ("NG", "NGA", "NIGERIA"):
+        locale_block = (
+            "\nLOCALE — NIGERIA: This user is Nigerian. Frame your `reasons` for a "
+            "Nigerian shopper: quote prices in ₦ where available, weigh value-for-money "
+            "and local availability, and use natural Nigerian-English phrasing.\n"
+        )
+
+    system_msg = f"""You are a recommendation expert. Your task is to rerank product candidates for a specific user persona based on their belief profile.{locale_block}
 
 USER BELIEF PROFILE:
 {beliefs_text}
@@ -902,7 +969,7 @@ async def recommend_items_eval(
         need streaming).
     """
     driver = get_driver()
-    embedder = get_embedder() if candidate_pool is None else None
+    embedder = get_embedder()
 
     async def _emit(ev: dict) -> None:
         if emit is not None:
@@ -932,18 +999,35 @@ async def recommend_items_eval(
     # Candidate set
     if candidate_pool is not None:
         candidates = await _fetch_items_by_ids(driver, candidate_pool)
+        # S100 path: restore the semantic signal that prod's E2E retrieval has but
+        # this fixed-pool path was discarding. Compute query↔item cosine so the
+        # pre-rank can surface relevant items instead of feeding the LLM a shuffle.
+        q_emb = embedder.encode(
+            request.context_query, normalize_embeddings=True
+        ).tolist()
+        for c in candidates:
+            c["item_similarity"] = _cosine(q_emb, c.get("embedding"))
     else:
+        # E2E: retrieval from 36K+ items — raise top_k so the held-out positive
+        # has a realistic chance of making the shortlist (was 20, giving HR@10≈0).
         candidates = await _retrieve_candidates(
             driver, embedder,
             context_query=request.context_query,
             categories=beliefs.categories,
             locale=locale,
             category_biases=beliefs.top_category_biases,
-            top_k=20,
+            top_k=40,
         )
 
     if not candidates:
         return []
+
+    # Cross-domain detection: if NONE of the pool's categories overlap the user's
+    # known categories, the persona category-bias term would *demote* the correct
+    # answer (its category is absent from history by construction). Gate it off.
+    user_cats = {c for c in (beliefs.categories or [])}
+    pool_cats = {(c.get("category") or "") for c in candidates}
+    use_category_bias = bool(user_cats & pool_cats)
 
     # Wilson-score fallback ordering (also used by the no_rerank ablation)
     def _fallback(c: dict) -> dict:
@@ -959,18 +1043,26 @@ async def recommend_items_eval(
             "reasons":      ["Ranked by Wilson community-rating score (no_rerank ablation)" if no_rerank else "Fallback ranking"],
         }
 
-    if no_rerank:
-        # Sort the full candidate pool by Wilson score; do not truncate at limit
-        # — caller may need the full ranking (e.g. for NDCG over 100-item pool).
-        ranked_full = sorted(
-            (_fallback(c) for c in candidates),
-            key=lambda d: -d["match_score"],
-        )
-        return ranked_full
+    # Hybrid pre-rank ordering of the whole pool (retrieval signal, no LLM).
+    pool_sorted = sorted(
+        candidates,
+        key=lambda c: -_hybrid_prerank_score(
+            c, beliefs.top_category_biases, use_category_bias=use_category_bias,
+        ),
+    )
 
-    # Full LLM-rerank path — pass full pool when S100 so the model can rank all 100,
-    # otherwise top 15 (matches prod behaviour).
-    top_for_llm = candidates if candidate_pool is not None else candidates[:15]
+    if no_rerank:
+        # Retrieval-only baseline: Wilson + category/price + semantic similarity,
+        # no LLM. Isolates the LLM's marginal contribution in the ablation.
+        return [_fallback(c) for c in pool_sorted]
+
+    # Full LLM-rerank path. For S100, hand the LLM the top-K of the hybrid
+    # pre-rank (K is the recall ceiling) instead of all 100 shuffled items;
+    # the remaining tail is padded by hybrid score below. E2E keeps top 15.
+    if candidate_pool is not None:
+        top_for_llm = pool_sorted[:S100_LLM_TOP_K]
+    else:
+        top_for_llm = candidates[:15]
 
     own_reviews = await _fetch_own_reviews_eval(
         driver, request.user_id, before_ts=before_timestamp, K=8,
@@ -999,8 +1091,9 @@ async def recommend_items_eval(
     data = None
     last_exc: Exception | None = None
     async with httpx.AsyncClient(timeout=120.0) as client:
-        for attempt in range(6):
+        for attempt in range(8):
             try:
+                await _mistral_limiter.acquire()
                 resp = await client.post(
                     f"{MISTRAL_BASE_URL}/chat/completions",
                     headers=headers,
@@ -1036,9 +1129,10 @@ async def recommend_items_eval(
     # model returned fewer than the pool size, pad with Wilson-ordered leftovers.
     if candidate_pool is not None:
         ranked_ids = {r.get("item_id") for r in ranked}
-        leftover = [c for c in candidates if c["item_id"] not in ranked_ids]
-        leftover_sorted = sorted(leftover, key=lambda c: -_score_item(c, beliefs.top_category_biases))
-        ranked = ranked + [_fallback(c) for c in leftover_sorted]
+        # Pad the tail in hybrid pre-rank order (pool_sorted) so a positive the
+        # LLM didn't surface still ranks as high as the retrieval signal allows.
+        leftover = [c for c in pool_sorted if c["item_id"] not in ranked_ids]
+        ranked = ranked + [_fallback(c) for c in leftover]
     else:
         ranked = ranked[: request.limit]
 

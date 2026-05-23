@@ -1,234 +1,259 @@
-# Kora Data Scraping, Graph, And Task A Workspace
+# Kora — DSN × BCT LLM Agent Challenge
 
-This repository contains the data pipeline, Nigerian ecommerce scraper, shared Neo4j knowledge graph builder, Task A review-generation system, and a placeholder for Task B recommendation work.
+Kora is a two-task AI system built for the DSN × BCT hackathon. It combines a
+Neo4j knowledge graph, a SQLite persona store, and large language models to:
 
-## Current Code Structure
+- **Task A** — Predict how a specific user would review a product they have not
+yet seen (persona-conditioned review + star rating generation).
+- **Task B** — Recommend ranked items to a user based on their persona,
+historical behaviour, and a natural-language query.
 
-```txt
-api/
-  FastAPI app and websocket/REST endpoints for Task A simulation.
+Both tasks share the same populated Neo4j knowledge graph and persona store.
 
-task_a/
-  README.md
-  inference/
-    task_a.py          # simulate_review orchestration
-    retrieval.py       # Neo4j exact-item, item-vector, category, and review-vector retrieval
-    prompt_builder.py  # persona/evidence prompts and rating calibration signals
-    persona_loader.py  # SQLite persona reads
-    llm_client.py      # Cerebras/Groq/Gemini-compatible LLM calls
-  evaluation/
-    run_eval.py        # hidden split evaluation runner
-    eval_store.py      # SQLite holdout/eval-persona store
-    build_eval_split.py
-    apply_eval_split.py
-    rebuild_eval_personas.py
-    rubric_evaluator.py
-    review_evaluator.py
+---
 
-task_b/
-  README.md            # placeholder for recommendation implementation
+## Repository Map
 
-pipeline/
-  Shared graph/persona ingestion pipeline.
-  Builds Neo4j User/Item/Review graph, review embeddings, item embeddings,
-  graph indexes, and personas.db.
-
-scripts/
-  backfill_item_embeddings.py
-  download_eval_models.sh
-
-optimized_scraper/
-  Nigerian ecommerce scraper and normalizer for Jumia/Konga plus local CSVs.
-
-output/
-  Generated/scraped JSONL datasets. `output/combined/` is the canonical
-  Nigerian ecommerce supplement.
-
-tests/
-  Root tests for Task A, eval store, LLM providers, item embeddings, API,
-  and rubric logic.
-
-ui/
-  Frontend chat/review UI.
-
-agents/
-  Separate Data Junior agent workspace. Left untouched for now.
+```
+api/                  FastAPI backend — WebSocket + REST endpoints for Task A & B
+task_a/               Task A: review + rating generation
+  inference/          Core pipeline (persona load → retrieval → prompt → LLM)
+  evaluation/         Holdout eval runner, scoring, and results
+  architecture.html   Full Task A system architecture (open in browser)
+  DATA_FLOW_WALKTHROUGH.html  Detailed retrieval data-flow walkthrough
+task_b/               Task B: recommendation system
+  inference/          Belief extraction, two-channel retrieval, Mistral rerank
+  evaluation/         Holdout builder, S100/E2E eval runner, results
+pipeline/             Shared offline ingestion → Neo4j + personas.db
+scripts/              Utility scripts (item embedding backfill, model downloads)
+ui/                   React/Vite frontend — deployed to Vercel
+tests/                Root-level integration and unit tests
+EVALUATION_GUIDE.md   Full evaluation methodology, results, and reproduction steps
+start.md              How to start the backend and frontend servers
 ```
 
-## Shared Graph Pipeline
+> `optimized_scraper/` and `output/` contain scraping and data
+> utilities used in the offline pipeline phase. They are not needed to run
+> the inference or evaluation paths.
 
-Task A and Task B both use the same populated Neo4j graph. The shared pipeline writes:
+---
 
-- `User`, `Item`, `Review`, `Category`, and `Platform` nodes
-- `WROTE`, `ABOUT`, `IN_CATEGORY`, `SOLD_ON`, and related graph edges
-- `Review.embedding` and `review_embedding` vector index
-- `Item.embedding` and `item_embedding` vector index
-- structured item indexes such as item id/category/sub-category
-- `personas.db` with persona statistics and category rating bias
+## Technology Stack
 
-Build a smoke dataset without Neo4j/model downloads:
+
+| Layer                   | What we use                                                                              | Why                                                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **Knowledge graph**     | Neo4j 5.x (async driver)                                                                 | Cypher traversal + native 384-dim cosine vector index; expressive joins across User→Review→Item→Category                 |
+| **Vector embeddings**   | `sentence-transformers/all-MiniLM-L6-v2`                                                 | Fast on CPU, 384-dim, same space for both review and item embeddings; batched at pipeline time, cached at inference time |
+| **Persona store**       | SQLite (`personas.db`)                                                                   | Sub-millisecond point-lookup by `user_id`; ships as a single file; no server required                                    |
+| **LLM — Task A**        | Gemini 2.5 Flash (default) · Mistral Medium · Groq Llama-3.3-70B · Cerebras gpt-oss-120b | Selectable via `LLM_PROVIDER` env var; all share the same Pydantic output contracts (`ReviewRating`, `RetrievalQuery`)   |
+| **LLM — Task B**        | Mistral Medium (`mistral-medium-latest`)                                                 | Used for reranking 50 candidates; token-bucket rate limiter keeps error rate at 0%                                       |
+| **API**                 | FastAPI + WebSocket                                                                      | `/ws/simulate` streams step events + tokens for Task A; `/ws/recommend` streams ranked items for Task B                  |
+| **Frontend**            | React 19 + Vite + TanStack Router + Tailwind + shadcn/ui                                 | SPA deployed on Vercel; lazy-loaded NVL force-graph canvas for knowledge graph visualisation                             |
+| **Graph visualisation** | `@neo4j-nvl/react`                                                                       | Force-directed canvas with click → node details overlay                                                                  |
+
+
+---
+
+## Getting Started
+
+### 1. Python environment
 
 ```bash
-PYTHONPATH=. python3 -m pipeline.run_pipeline \
-  --sample-size 50 \
-  --amazon-max-rows 0 \
-  --skip-neo4j \
-  --use-hash-embedder \
-  --sqlite-path /tmp/personas-smoke.db
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
-Build the graph:
+### 2. Configure environment variables
 
 ```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in:
+
+```env
+# Neo4j
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_neo4j_password
+
+# Persona store
+SQLITE_PATH=./personas.db
+
+# LLM — choose one provider for Task A:
+#   gemini (default) | mistral | groq | cerebras
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+
+# Mistral — required for Task B and for Task A if LLM_PROVIDER=mistral
+MISTRAL_API_KEY=your_mistral_api_key
+```
+
+See `.env.example` for the full list of optional provider keys (`GROQ_API_KEY`, `CEREBRAS_API_KEY`).
+
+### 3. Start the servers
+
+See **[start.md](start.md)** for the exact commands. Short version:
+
+```bash
+# Terminal 1 — backend (port 8001)
+.venv/bin/uvicorn api.main:app --reload --port 8001
+
+# Terminal 2 — frontend (port 8080)
+cd ui && bun run dev
+```
+
+Frontend: `http://localhost:8080` · API health check: `http://localhost:8001/health`
+
+### 4. Node (frontend) dependencies
+
+```bash
+cd ui && bun install
+```
+
+---
+
+## Task A — User Modeling
+
+Task A predicts how a specific user would review a product they have not yet
+seen. Given a user ID, a product name, and a price, it generates:
+
+1. A written review in the user's own voice and style.
+2. A 1–5 star rating calibrated to that user's historical rating habits.
+
+**Key design decisions:**
+
+- **Two LLM calls per request**: Call 1 generates the review text (streaming);
+Call 2 produces the structured rating with confidence and evidence fields.
+- **3-tier retrieval**: Category-scoped Cypher (primary) → LLM-generated Cypher
+(fallback) → 384-dim vector search (last resort).
+- **Style anchors**: The user's own past reviews are included in the prompt to
+ground the model in their specific vocabulary and sentence style.
+- **Aspect-severity calibration**: If the generated review contains explicit
+failure phrases ("stopped working", "cheaply made"), the rating is hard-capped
+at 2 stars regardless of LLM output.
+- **Nigerian locale support**: Pidgin frequency, value-for-money language, and
+authenticity signals are all persona-aware and injected via a locale overlay block.
+
+**Best eval result** (50 cases, Mistral Medium): **RMSE 0.775**, ROUGE-L max 0.1427.
+See [EVALUATION_GUIDE.md](EVALUATION_GUIDE.md) §4 and [task_a/README.md](task_a/README.md).
+
+**Architecture deep-dive**: [task_a/architecture.html](task_a/architecture.html) (open in browser).
+
+---
+
+## Task B — Recommendation
+
+Task B returns a ranked list of items for a user + natural-language query. It
+supports warm users (rich history), cold-start users (1–3 reviews), cross-domain
+recommendations, and multi-turn conversational refinement.
+
+**Pipeline:**
+
+1. Load user persona from SQLite.
+2. Extract disentangled beliefs from KG: preferred categories, price sensitivity,
+  semantic likes/dislikes from the user's own review text.
+3. Two-channel candidate retrieval: vector similarity search + structural category query.
+4. **Hybrid pre-rank** using **Wilson score** + persona category bias + query↔item cosine similarity.
+5. Mistral LLM rerank of top-K candidates, with optional **web search** (FireCrawl) when the KG
+  candidate pool does not contain relevant items.
+6. Return ranked items with match scores and natural-language reasons.
+
+> **What is Wilson score?** The Wilson score lower-bound confidence interval converts an item's
+> average rating + review count into a conservative quality estimate. An item with 4.5★ from
+> 8 reviews scores lower than an item with 4.2★ from 400 reviews — it penalises low-count items
+> that happen to have inflated averages. Formula used: `(p + z²/2n) / (1 + z²/n) − margin`
+> where `p = (avg_rating − 1) / 4` (normalised 1→5 to 0→1), `z = 1.28` (80% CI), `n = review_count`.
+
+**LLM model for Task B:** Mistral Medium by default. Configure via:
+
+```env
+MISTRAL_API_KEY=your_mistral_key
+MISTRAL_RECOMMEND_MODEL=mistral-medium-latest   # change to any Mistral model you have access to
+MISTRAL_BASE_URL=https://api.mistral.ai/v1      # override to point at any OpenAI-compatible API
+```
+
+**Best eval result** (warm subset, S100 protocol): **NDCG@10 0.201**, HR@10 0.333 — 4.5× above random baseline.
+See [EVALUATION_GUIDE.md](EVALUATION_GUIDE.md) §5 and [task_b/README.md](task_b/README.md).
+
+**Architecture deep-dive**: [task_b/architecture.html](task_b/architecture.html) (open in browser).
+
+---
+
+## Evaluation
+
+A comprehensive evaluation guide covering both tasks is at:
+
+**[EVALUATION_GUIDE.md](EVALUATION_GUIDE.md)**
+
+It documents:
+
+- Dataset and KG stats (36,412 items, ~200K reviews, 39 categories spanning Amazon Electronics + Nigerian e-commerce + restaurant/place reviews)
+- How holdout data was built and why it prevents leakage
+- All metrics defined in plain English (RMSE, MAE, NDCG, HR, MRR, ROUGE-L)
+- Exact commands to reproduce every number
+- Optimization history for both tasks
+- Future work directions
+
+---
+
+## Frontend — Vercel Deployment
+
+The frontend at `ui/` is deployed to Vercel as a static SPA.
+
+**Local development** (`.env.local` already configured):
+
+```
+VITE_API_URL=http://localhost:8001
+```
+
+**Vercel production** — set this environment variable in the Vercel dashboard
+before deploying:
+
+```
+VITE_API_URL=https://agent-predictor-production.up.railway.app
+```
+
+The backend is hosted on Railway at that URL. All three places in the UI that
+construct API/WebSocket URLs (`lib/api.ts`, `lib/ws.ts`,
+`components/chat/KnowledgeGraph.tsx`) read `import.meta.env.VITE_API_URL`
+automatically — no code changes needed.
+
+Build command (already in `vercel.json`):
+
+```bash
+vite build --config vite.spa.config.ts
+```
+
+---
+
+## Shared Data Pipeline
+
+Both tasks use the same populated Neo4j knowledge graph and `personas.db`. The
+pipeline in `pipeline/` is run once offline to build these stores from the Amazon  
+Reviews 2023 dataset.
+
+If you need to rebuild from scratch:
+
+```bash
+# Build Neo4j graph + personas.db from Amazon Reviews 2023 (Electronics domain)
 docker compose up -d neo4j
 PYTHONPATH=. python3 -m pipeline.run_pipeline --sample-size 5000 --reset-neo4j
-```
 
-Backfill item embeddings:
-
-```bash
+# Backfill item embeddings (run after pipeline)
 PYTHONPATH=. python3 -m scripts.backfill_item_embeddings
 ```
 
-## Task A
-
-Task A generates a user-personalized review and rating for a target product.
-
-Runtime flow:
-
-1. Load persona from SQLite.
-2. Resolve item metadata from Neo4j.
-3. Build canonical item embedding text.
-4. Retrieve exact-item reviews, then item-vector similar product reviews, then category/review-vector fallbacks.
-5. Build prompts from persona, own reviews, community anchors, item stats, and retrieval branch.
-6. Generate review text with the configured LLM provider.
-7. Ask the LLM for a rating and apply deterministic calibration.
-8. Return review text, final rating, graph context, item stats, and evaluation audit data.
-
-Run a hidden-split eval:
-
-```bash
-PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
-python3 -m task_a.evaluation.run_eval \
-  --sqlite-path personas.db \
-  --split-name task_a_v1 \
-  --max-cases 30 \
-  --skip-bertscore \
-  --output-dir task_a/evaluation/output/task_a_v1_pass9_recheck
-```
-
-Run a second slice:
-
-```bash
-PYTHONPATH=. PERSONA_SOURCE=eval_train LLM_PROVIDER=cerebras \
-python3 -m task_a.evaluation.run_eval \
-  --sqlite-path personas.db \
-  --split-name task_a_v1 \
-  --max-cases 30 \
-  --offset 30 \
-  --skip-bertscore \
-  --output-dir task_a/evaluation/output/task_a_v1_pass9_offset30
-```
-
-Latest Pass 9 working estimate over two Cerebras 30-case slices:
-
-| Slice | Cases | RMSE | MAE | exact_item | item_vector |
-|---|---:|---:|---:|---:|---:|
-| first 30 | 30 | 0.8756 | 0.5000 | 23 | 7 |
-| offset 30 | 30 | 1.0801 | 0.8333 | 26 | 4 |
-| combined | 60 | 0.9832 | 0.6667 | 49 | 11 |
-
-CatBoost/training artifacts have been removed from the active codebase. The current Task A path is retrieval + LLM + deterministic calibration.
-
-## Task B
-
-Task B implementation should live in `task_b/` and reuse the shared Neo4j graph from `pipeline/`. Do not duplicate ingestion or graph backfill logic.
-
-## Nigerian Dataset
-
-The canonical Nigerian ecommerce supplement is in:
-
-```txt
-output/combined/review_categories/<Category>.jsonl.gz
-output/combined/meta_categories/meta_<Category>.jsonl.gz
-```
-
-Example loader:
-
-```python
-import gzip
-import json
-from pathlib import Path
-
-DATA_ROOT = Path("output")
-
-def load_reviews(category: str, platform: str = "combined"):
-    path = DATA_ROOT / platform / "review_categories" / f"{category}.jsonl.gz"
-    with gzip.open(path, "rt", encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                yield json.loads(line)
-```
-
-Inspect records:
-
-```bash
-python3 -m optimized_scraper.cli peek --platform combined --category Baby_Products --limit 5
-```
-
-## Scraping
-
-The scraper in `optimized_scraper/` collects product reviews from Jumia Nigeria and Konga, normalizes them to the dataset schema, and writes resumable output under `output/`.
-
-```bash
-python3 -m optimized_scraper.cli run --platform all --categories Baby_Products,Sports_and_Outdoors,Video_Games --max-products 500 --concurrency 6
-python3 -m optimized_scraper.cli combine
-python3 -m optimized_scraper.cli manifest
-```
-
-## Setup
-
-```bash
-cd /Users/fadex/Downloads/coding-apps/data-scraping
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Required runtime services/keys depend on the command:
-
-```bash
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=...
-SQLITE_PATH=personas.db
-EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
-LLM_PROVIDER=cerebras
-CEREBRAS_API_KEY=...
-```
-
-Firecrawl is optional for the scraper fast path but useful for Konga and fallback extraction:
-
-```bash
-export FIRECRAWL_API_KEY="your_firecrawl_key_here"
-```
+---
 
 ## Tests
 
-Task A and shared pipeline focused tests:
-
 ```bash
-PYTHONPATH=. python3 -m pytest \
-  tests/test_item_embeddings_and_eval_store.py \
-  tests/test_pass16.py \
-  pipeline/tests \
-  -q
+# Task B metric unit tests (no external deps, instant)
+.venv/bin/pytest task_b/evaluation/test_metrics.py -q
+
+# Root integration tests (requires Neo4j + backend running)
+.venv/bin/pytest tests/ -q
 ```
 
-Scraper tests:
-
-```bash
-PYTHONPATH=. python3 -m pytest optimized_scraper/tests -q
-```
-
-Full root tests include API/server and agent workspace checks. `/agents` is intentionally left as a separate workspace for now.
