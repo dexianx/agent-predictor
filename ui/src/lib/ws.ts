@@ -13,10 +13,16 @@ export type SimulateRequest = {
   raw_message?: string;
 };
 
+export type PriorTurn = {
+  query: string;
+  shown_item_ids: string[];
+};
+
 export type RecommendWsRequest = {
   user_id: string;
   context_query: string;
   limit?: number;
+  prior_turns?: PriorTurn[];
 };
 
 const WS_BASE =

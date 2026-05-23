@@ -87,6 +87,30 @@ function RecommendPage() {
       return;
     }
 
+    // Derive prior_turns from completed assistant messages already in this thread.
+    // Each completed assistant message has payload.items (RecommendItem[]); take top 3 ids
+    // and pair with the immediately preceding user message text as the query.
+    const priorTurns: { query: string; shown_item_ids: string[] }[] = [];
+    const msgs = thread.messages;
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.role !== "assistant") continue;
+      const payload = m.payload;
+      if (!payload || payload.type !== "recommend") continue;
+      const items = payload.items ?? [];
+      if (items.length === 0) continue;
+      // Walk back to find the user query that prompted this assistant message
+      let userQ = "";
+      for (let j = i - 1; j >= 0; j--) {
+        if (msgs[j].role === "user") { userQ = msgs[j].text; break; }
+      }
+      if (!userQ) continue;
+      priorTurns.push({
+        query: userQ,
+        shown_item_ids: items.slice(0, 3).map((it) => it.item_id).filter(Boolean),
+      });
+    }
+
     appendRecMessage(threadId, { id: newRecMessageId(), role: "user", text: contextQuery, createdAt: Date.now() });
 
     const asstId = newRecMessageId();
@@ -99,7 +123,12 @@ function RecommendPage() {
     const accSteps: ChatMessage["steps"] = [];
 
     try {
-      for await (const ev of connectRecommend({ user_id: userId, context_query: contextQuery, limit: 10 })) {
+      for await (const ev of connectRecommend({
+        user_id: userId,
+        context_query: contextQuery,
+        limit: 10,
+        prior_turns: priorTurns.length > 0 ? priorTurns : undefined,
+      })) {
         if (stopRef.current) break;
 
         if (ev.type === "step") {

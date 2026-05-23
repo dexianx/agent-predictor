@@ -117,10 +117,16 @@ WsEvent = Union[StepEvent, TokenEvent, GraphDataEvent, FinalEvent, ErrorEvent]
 
 # ── Task B: Recommendation models ─────────────────────────────────────────────
 
+class PriorTurn(BaseModel):
+    query: str
+    shown_item_ids: list[str] = Field(default_factory=list)
+
+
 class RecommendRequest(BaseModel):
     user_id: str
     context_query: str
     limit: int = 10
+    prior_turns: list[PriorTurn] | None = None
 
 
 class RecommendItem(BaseModel):

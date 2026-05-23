@@ -105,6 +105,9 @@ class RecommendRequest:
     user_id: str
     context_query: str
     limit: int = 10
+    # Multi-turn: list of {"query": str, "shown_item_ids": list[str]} ordered oldest→newest.
+    # None or empty list means single-turn (existing prod behaviour).
+    prior_turns: list[dict] | None = None
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
@@ -214,6 +217,88 @@ async def _fetch_own_reviews(driver, user_id: str, K: int = 8) -> list[dict]:
             K=K,
         )
         return [dict(r) async for r in result]
+
+
+# Eval variant: drops reviews at/after $before_ts so the held-out review's text
+# cannot leak into the ICL own-reviews block.
+QUERY_OWN_RECENT_EVAL = """
+MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(other:Item)
+WHERE r.timestamp < $before_ts
+  AND ($exclude_item_id = "" OR other.id <> $exclude_item_id)
+WITH r, other,
+     duration.between(datetime({epochSeconds: r.timestamp}), datetime()).months AS age
+ORDER BY age ASC
+LIMIT $K
+RETURN r.text AS text, r.rating AS rating, r.wordCount AS word_count,
+       r.locale AS locale, other.title AS item_name, other.category AS category,
+       age AS age_months
+"""
+
+
+async def _fetch_own_reviews_eval(driver, user_id: str, before_ts: int, K: int = 8) -> list[dict]:
+    async with driver.session() as session:
+        result = await session.run(
+            QUERY_OWN_RECENT_EVAL,
+            user_id=user_id,
+            exclude_item_id="",
+            before_ts=int(before_ts),
+            K=K,
+        )
+        return [dict(r) async for r in result]
+
+
+# ── Eval-mode candidate fetch ────────────────────────────────────────────────
+
+QUERY_CANDIDATE_ITEMS_BY_IDS = """
+UNWIND $item_ids AS iid
+MATCH (i:Item {id: iid})
+OPTIONAL MATCH (i)-[:IN_CATEGORY]->(c:Category)
+WITH i, c LIMIT $limit
+RETURN i.id            AS item_id,
+       i.title         AS item_title,
+       i.brand         AS brand,
+       coalesce(c.name, i.category) AS category,
+       i.subCategory   AS sub_category,
+       i.priceUsd      AS price_usd,
+       i.priceNgn      AS price_ngn,
+       i.avgRating     AS avg_rating,
+       i.ratingCount   AS rating_count,
+       i.features      AS features
+"""
+
+
+async def _fetch_items_by_ids(driver, item_ids: list[str]) -> list[dict]:
+    """S100-mode candidate fetch: hydrate a fixed pool of item ids."""
+    if not item_ids:
+        return []
+    async with driver.session() as session:
+        result = await session.run(
+            QUERY_CANDIDATE_ITEMS_BY_IDS,
+            item_ids=item_ids,
+            limit=len(item_ids),
+        )
+        rows = [dict(r) async for r in result]
+    # Preserve input order for deterministic ranking when the LLM ties
+    by_id = {r["item_id"]: r for r in rows if r.get("item_id")}
+    out: list[dict] = []
+    for iid in item_ids:
+        row = by_id.get(iid)
+        if row is None:
+            continue
+        out.append({
+            "item_id":      row.get("item_id") or "",
+            "item_title":   row.get("item_title") or "",
+            "brand":        row.get("brand") or "",
+            "category":     row.get("category") or "",
+            "sub_category": row.get("sub_category") or "",
+            "price_usd":    row.get("price_usd"),
+            "price_ngn":    row.get("price_ngn"),
+            "avg_rating":   float(row.get("avg_rating") or 0),
+            "rating_count": int(row.get("rating_count") or 0),
+            "features":     row.get("features") or [],
+            "item_similarity": 0.0,
+        })
+    return out
 
 
 # ── Graph event builder ────────────────────────────────────────────────────────
@@ -369,6 +454,20 @@ async def _call_mistral_with_tools(
     return content, None
 
 
+def _format_prior_turns(prior_turns: list[dict] | None) -> str:
+    """Render multi-turn history as a short block. Empty string if none."""
+    if not prior_turns:
+        return ""
+    lines = ["PRIOR CONVERSATION TURNS (oldest first):"]
+    for i, t in enumerate(prior_turns, 1):
+        q = (t.get("query") or "").strip()
+        shown = t.get("shown_item_ids") or []
+        shown_str = ", ".join(str(s) for s in list(shown)[:3]) or "—"
+        lines.append(f"  Turn {i}: User asked \"{q}\". Top items shown: [{shown_str}].")
+    lines.append("Incorporate the user's refinement across these turns when ranking.")
+    return "\n".join(lines)
+
+
 def _build_rerank_messages(
     context_query: str,
     beliefs_text: str,
@@ -377,6 +476,7 @@ def _build_rerank_messages(
     locale: str,
     limit: int,
     web_results: list[dict] | None = None,
+    prior_turns: list[dict] | None = None,
 ) -> list[dict]:
     own_block = ""
     if own_reviews:
@@ -419,12 +519,15 @@ def _build_rerank_messages(
         "If KG candidates are sufficient, do NOT call the tool."
     )
 
+    prior_block = _format_prior_turns(prior_turns)
+
     system_msg = f"""You are a recommendation expert. Your task is to rerank product candidates for a specific user persona based on their belief profile.
 
 USER BELIEF PROFILE:
 {beliefs_text}
 
 {own_block}
+{prior_block}
 {web_block}
 
 Think step by step: consider each candidate against the persona's Category preferences (WHERE they buy), Price orientation (VALUE), and Semantic likes/dislikes (WHY). Only include items that are genuinely relevant — do not pad with irrelevant products just to reach {limit} items.{tool_instruction}
@@ -679,6 +782,7 @@ async def recommend_items(
         candidates=top15,
         locale=locale,
         limit=request.limit,
+        prior_turns=request.prior_turns,
     )
 
     _phase1_text, tool_call = await _call_mistral_with_tools(messages, emit)
@@ -729,6 +833,7 @@ async def recommend_items(
             locale=locale,
             limit=request.limit,
             web_results=web_results,
+            prior_turns=request.prior_turns,
         )
         full_response = await _call_mistral_reasoning(messages_for_stream, emit)
     else:
@@ -767,6 +872,175 @@ async def recommend_items(
         "items":         ranked,
         "locale":        locale,
     })
+
+    return ranked
+
+
+# ── Eval entrypoint (leakage-safe, supports ablations + multi-turn) ───────────
+
+async def recommend_items_eval(
+    request: RecommendRequest,
+    *,
+    before_timestamp: int,
+    candidate_pool: list[str] | None = None,
+    no_rerank: bool = False,
+    no_persona: bool = False,
+    emit: Callable[[dict], Awaitable[None]] | None = None,
+) -> list[dict]:
+    """
+    Eval-only entrypoint.
+
+    Differences vs `recommend_items`:
+      * Reads belief/own-review queries with $before_ts so the held-out review
+        cannot leak into the persona profile or ICL prompt.
+      * Optional `candidate_pool`: restricts retrieval to a fixed list of item ids
+        (S100 protocol). When None, runs the full two-channel retrieval (E2E).
+      * Ablation flags: `no_rerank` skips the Mistral LLM and ranks by Wilson
+        score; `no_persona` zeroes the belief profile.
+      * Returns the ranked list directly. Events are emitted only if `emit`
+        is provided (useful for one-off CLI debugging; the eval runner does not
+        need streaming).
+    """
+    driver = get_driver()
+    embedder = get_embedder() if candidate_pool is None else None
+
+    async def _emit(ev: dict) -> None:
+        if emit is not None:
+            await emit(ev)
+
+    persona = load_persona(SQLITE_PATH, request.user_id)
+    if persona is None:
+        await _emit({"type": "error", "message": f"User {request.user_id} not in persona store"})
+        return []
+
+    locale = persona.get("locale") or "US"
+
+    # Beliefs — leakage-safe variant; ablation can zero it.
+    if no_persona:
+        from .belief_extractor import BeliefProfile
+        beliefs = BeliefProfile(
+            categories=[], price_label="mid-range", price_sensitivity=0.5,
+            semantic_likes=[], semantic_dislikes=[], top_category_biases={},
+        )
+    else:
+        async with driver.session() as session:
+            beliefs = await extract_beliefs(
+                session, persona, limit=30, before_timestamp=before_timestamp,
+            )
+    beliefs_text = format_beliefs(beliefs)
+
+    # Candidate set
+    if candidate_pool is not None:
+        candidates = await _fetch_items_by_ids(driver, candidate_pool)
+    else:
+        candidates = await _retrieve_candidates(
+            driver, embedder,
+            context_query=request.context_query,
+            categories=beliefs.categories,
+            locale=locale,
+            category_biases=beliefs.top_category_biases,
+            top_k=20,
+        )
+
+    if not candidates:
+        return []
+
+    # Wilson-score fallback ordering (also used by the no_rerank ablation)
+    def _fallback(c: dict) -> dict:
+        return {
+            "item_id":      c["item_id"],
+            "title":        c["item_title"],
+            "category":     c["category"],
+            "price_usd":    c.get("price_usd"),
+            "price_ngn":    c.get("price_ngn"),
+            "avg_rating":   c["avg_rating"],
+            "rating_count": c["rating_count"],
+            "match_score":  round(_score_item(c, beliefs.top_category_biases), 3),
+            "reasons":      ["Ranked by Wilson community-rating score (no_rerank ablation)" if no_rerank else "Fallback ranking"],
+        }
+
+    if no_rerank:
+        # Sort the full candidate pool by Wilson score; do not truncate at limit
+        # — caller may need the full ranking (e.g. for NDCG over 100-item pool).
+        ranked_full = sorted(
+            (_fallback(c) for c in candidates),
+            key=lambda d: -d["match_score"],
+        )
+        return ranked_full
+
+    # Full LLM-rerank path — pass full pool when S100 so the model can rank all 100,
+    # otherwise top 15 (matches prod behaviour).
+    top_for_llm = candidates if candidate_pool is not None else candidates[:15]
+
+    own_reviews = await _fetch_own_reviews_eval(
+        driver, request.user_id, before_ts=before_timestamp, K=8,
+    )
+
+    messages = _build_rerank_messages(
+        context_query=request.context_query,
+        beliefs_text=beliefs_text,
+        own_reviews=own_reviews,
+        candidates=top_for_llm,
+        locale=locale,
+        limit=request.limit if candidate_pool is None else len(top_for_llm),
+        prior_turns=request.prior_turns,
+    )
+
+    # Non-streaming, no tool-use, no web search. Retry 429 / 5xx with exponential
+    # backoff so concurrent eval workers can survive Mistral rate limits.
+    headers = {
+        "Authorization": f"Bearer {MISTRAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": MISTRAL_RECOMMEND_MODEL,
+        "messages": messages,
+    }
+    data = None
+    last_exc: Exception | None = None
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for attempt in range(6):
+            try:
+                resp = await client.post(
+                    f"{MISTRAL_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    # Respect Retry-After if present, else exp backoff with jitter
+                    import random as _r
+                    ra = resp.headers.get("Retry-After")
+                    delay = float(ra) if ra and ra.replace(".", "").isdigit() else (2 ** attempt) + _r.random()
+                    delay = min(delay, 60.0)
+                    await asyncio.sleep(delay)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+                last_exc = exc
+                await asyncio.sleep(min(2 ** attempt, 60.0))
+                continue
+    if data is None:
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Mistral request failed after retries")
+    text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    ranked = _extract_json(text)
+
+    if not ranked:
+        return [_fallback(c) for c in top_for_llm]
+
+    # When candidate_pool is set we need the model's full ranking up to pool size
+    # so the eval runner can compute NDCG over the whole 100-item pool. If the
+    # model returned fewer than the pool size, pad with Wilson-ordered leftovers.
+    if candidate_pool is not None:
+        ranked_ids = {r.get("item_id") for r in ranked}
+        leftover = [c for c in candidates if c["item_id"] not in ranked_ids]
+        leftover_sorted = sorted(leftover, key=lambda c: -_score_item(c, beliefs.top_category_biases))
+        ranked = ranked + [_fallback(c) for c in leftover_sorted]
+    else:
+        ranked = ranked[: request.limit]
 
     return ranked
 

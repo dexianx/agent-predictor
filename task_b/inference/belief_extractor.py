@@ -51,6 +51,19 @@ ORDER BY r.timestamp DESC
 LIMIT $limit
 """
 
+# Eval-only variant: excludes reviews at or after $before_timestamp so the
+# held-out review cannot be used to build the belief profile that predicts it.
+QUERY_OWN_REVIEWS_FOR_BELIEFS_EVAL = """
+MATCH (u:User {id: $user_id})-[:WROTE]->(r:Review)-[:ABOUT]->(i:Item)
+WHERE r.text IS NOT NULL AND size(trim(r.text)) > 20
+  AND r.timestamp < $before_timestamp
+RETURN r.text AS text, toFloat(r.rating) AS rating,
+       i.category AS category,
+       coalesce(i.priceNgn, i.priceUsd * 1500.0) AS price_ngn
+ORDER BY r.timestamp DESC
+LIMIT $limit
+"""
+
 
 @dataclass
 class BeliefProfile:
@@ -92,14 +105,23 @@ async def extract_beliefs(
     session: AsyncSession,
     persona: dict,
     limit: int = 30,
+    before_timestamp: int | None = None,
 ) -> BeliefProfile:
     user_id = persona["user_id"]
 
-    result = await session.run(
-        QUERY_OWN_REVIEWS_FOR_BELIEFS,
-        user_id=user_id,
-        limit=limit,
-    )
+    if before_timestamp is not None:
+        result = await session.run(
+            QUERY_OWN_REVIEWS_FOR_BELIEFS_EVAL,
+            user_id=user_id,
+            limit=limit,
+            before_timestamp=int(before_timestamp),
+        )
+    else:
+        result = await session.run(
+            QUERY_OWN_REVIEWS_FOR_BELIEFS,
+            user_id=user_id,
+            limit=limit,
+        )
     rows = [dict(r) async for r in result]
 
     # Category: from persona store (already ranked by review count)
