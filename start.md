@@ -1,4 +1,4 @@
-# Starting the Kora Servers
+# Starting the Kora App
 
 Two processes must be running: the **FastAPI backend** (port 8001) and the **Vite frontend** (port 8080).
 

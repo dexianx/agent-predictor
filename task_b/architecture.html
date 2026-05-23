@@ -78,13 +78,20 @@
   }
   td code, th code { font-size: 11.5px; }
   .mermaid {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: #0c101e;
+    border: 1px solid #2a3050;
     border-radius: 10px;
     padding: 22px;
     margin: 14px 0;
     overflow-x: auto;
   }
+  /* Force Mermaid SVG background transparent so our container color shows */
+  .mermaid svg { background: transparent !important; }
+  /* Subgraph label color fix for dark theme */
+  .mermaid .cluster-label { color: #8ab4d8 !important; }
+  .mermaid .cluster rect { fill: #14182a !important; stroke: #3a4a7a !important; }
+  /* Edge label pill */
+  .mermaid .edgeLabel .label { background: #0e0e0e !important; color: #8ab4d8 !important; }
   .callout {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -154,6 +161,7 @@
 <p>The diagram below shows the full request-to-response flow for a single recommendation turn. Solid arrows are mandatory paths; dotted arrows are conditional (web search, multi-turn injection).</p>
 
 <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'clusterBkg': '#14182a', 'clusterBorder': '#3a4a7a', 'edgeLabelBackground': '#0e0e0e'}}}%%
 flowchart TB
     BROWSER["🌐 Browser — React SPA\n/r/$threadId route"]
 
@@ -209,6 +217,22 @@ flowchart TB
     S5B -- "FireCrawl results" --> S6
     LLM_BOX -- "streaming tokens + JSON" --> S6
     S7 --> RESP --> BROWSER
+
+    classDef client    fill:#0b3535,stroke:#3aaa8e,color:#b0ede0,stroke-width:2px
+    classDef reqNode   fill:#0e2a3a,stroke:#4a9fd5,color:#c0e0f8,stroke-width:1.5px
+    classDef pipeline  fill:#132240,stroke:#5b9bd5,color:#d0e8ff,stroke-width:1.5px
+    classDef webSearch fill:#3a0f0f,stroke:#e05a5a,color:#f8c0c0,stroke-width:2px
+    classDef storage   fill:#231540,stroke:#9b72d0,color:#d8c0f8,stroke-width:1.5px
+    classDef llmNode   fill:#2e1a06,stroke:#e07b39,color:#f8d0a0,stroke-width:2px
+    classDef output    fill:#0b2918,stroke:#4caf6e,color:#b0f0c0,stroke-width:1.5px
+
+    class BROWSER client
+    class R reqNode
+    class S1,S2,S3,S4,S5,S6,S7 pipeline
+    class S5B webSearch
+    class SQLITE,NEO4J storage
+    class MISTRAL,WEB llmNode
+    class EV,CARDS output
 </div>
 
 <!-- ─────────────────────────────────────────────────────────────────── -->
@@ -271,6 +295,7 @@ ORDER BY r.timestamp DESC LIMIT $limit
 <p>Implemented in <code>recommend_items()</code>. Two retrieval channels run in a single Neo4j async session and their results are merged + deduplicated.</p>
 
 <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'clusterBkg': '#14182a', 'clusterBorder': '#3a4a7a', 'edgeLabelBackground': '#0e0e0e'}}}%%
 flowchart TD
     QUERY["context_query: string\n(e.g. 'something budget in headphones')"]
 
@@ -296,6 +321,18 @@ flowchart TD
 
     SCORE["Score each candidate:\n_score_item(row, category_biases)\n+ item_similarity × 0.15\nSort descending → top_k"]
     MERGE --> SCORE
+
+    classDef input   fill:#0b3535,stroke:#3aaa8e,color:#b0ede0,stroke-width:2px
+    classDef chanA   fill:#132240,stroke:#5b9bd5,color:#d0e8ff,stroke-width:1.5px
+    classDef chanB   fill:#231540,stroke:#9b72d0,color:#d8c0f8,stroke-width:1.5px
+    classDef merge   fill:#0b2918,stroke:#4caf6e,color:#b0f0c0,stroke-width:2px
+    classDef score   fill:#2e1a06,stroke:#e07b39,color:#f8d0a0,stroke-width:2px
+
+    class QUERY,EMBED input
+    class A1,A2 chanA
+    class B1,B2 chanB
+    class MERGE merge
+    class SCORE score
 </div>
 
 <h3>5.1 Vector channel query</h3>
@@ -369,6 +406,7 @@ S100_SIM_WEIGHT = 0.5  (tunable via env var)
 <p>After pre-ranking, the top-K candidates are passed to Mistral for reasoning-based reranking. The call structure is two-phase to support optional tool use:</p>
 
 <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'actorBkg': '#132240', 'actorBorder': '#5b9bd5', 'actorTextColor': '#d0e8ff', 'actorLineColor': '#3a5a8a', 'signalColor': '#8ab4d8', 'signalTextColor': '#c0d8f0', 'noteBkgColor': '#2e1a08', 'noteBorderColor': '#e07b39', 'noteTextColor': '#f0c090', 'loopTextColor': '#c0d8f0', 'labelBoxBkgColor': '#1a2a3a', 'labelBoxBorderColor': '#5b9bd5', 'labelTextColor': '#d0e8ff', 'activationBkgColor': '#1e3a5f', 'activationBorderColor': '#5b9bd5', 'background': '#0e0e0e', 'edgeLabelBackground': '#0e0e0e'}}}%%
 sequenceDiagram
     autonumber
     participant ORCH as recommend_items
@@ -827,7 +865,40 @@ Mean rank improvement (T1→T3):  +1.90 positions</pre>
 
 <script>
   // Initialize Mermaid
-  mermaid.initialize({ startOnLoad: true, theme: "default" });
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    themeVariables: {
+      darkMode: true,
+      background: "#0e0e0e",
+      primaryColor: "#1e3a5f",
+      primaryTextColor: "#e2e2e2",
+      primaryBorderColor: "#5b9bd5",
+      secondaryColor: "#2d1b4e",
+      tertiaryColor: "#1a3320",
+      lineColor: "#6b9fd4",
+      textColor: "#e2e2e2",
+      clusterBkg: "#14182a",
+      clusterBorder: "#3a4a7a",
+      edgeLabelBackground: "#0e0e0e",
+      // sequence diagram actors
+      actorBkg: "#1e3a5f",
+      actorBorder: "#5b9bd5",
+      actorTextColor: "#e2e2e2",
+      actorLineColor: "#3a5a8a",
+      signalColor: "#8ab4d8",
+      signalTextColor: "#e2e2e2",
+      labelBoxBkgColor: "#1a2a3a",
+      labelBoxBorderColor: "#5b9bd5",
+      labelTextColor: "#e2e2e2",
+      loopTextColor: "#c0d8f0",
+      noteBorderColor: "#e07b39",
+      noteBkgColor: "#2e1a08",
+      noteTextColor: "#f0c090",
+      activationBorderColor: "#5b9bd5",
+      activationBkgColor: "#243f60",
+    }
+  });
 
   // Smooth scroll for nav links
   document.querySelectorAll('nav a[href^="#"]').forEach(a => {
