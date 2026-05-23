@@ -102,7 +102,7 @@ export function AgentSteps({ steps, running, streamingText, expandable }: Props)
   if (steps.length === 0) return null;
 
   return (
-    <div className="flex gap-3">
+    <div className="flex gap-3 min-w-0 overflow-hidden">
       <div className="shrink-0 mt-0.5">
         <motion.div
           animate={running && !streamingText ? { scale: [1, 1.12, 1] } : { scale: 1 }}
@@ -117,7 +117,7 @@ export function AgentSteps({ steps, running, streamingText, expandable }: Props)
         </motion.div>
       </div>
 
-      <div className="relative pl-6 flex-1" style={{ minHeight: totalHeight }}>
+      <div className="relative pl-6 flex-1 min-w-0 overflow-hidden" style={{ minHeight: totalHeight }}>
         <div
           className="absolute left-[10px] top-2 bottom-2 w-px bg-border/70"
           aria-hidden
@@ -146,7 +146,7 @@ export function AgentSteps({ steps, running, streamingText, expandable }: Props)
           )}
         </motion.div>
 
-        <ol className="space-y-0">
+        <ol className="space-y-0 min-w-0">
           {steps.map((s, i) => {
             const done = i < activeIndex;
             const active = i === activeIndex && running && !streamingText;
@@ -160,6 +160,7 @@ export function AgentSteps({ steps, running, streamingText, expandable }: Props)
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.4, ease: EASE, delay: i * 0.03 }}
+                  className="min-w-0 overflow-hidden"
                 >
                   <ToolCallCard step={s as ToolCallStep} />
                 </motion.li>

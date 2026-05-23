@@ -7,6 +7,7 @@ import { useMemo } from "react";
 import { AgentSteps } from "./AgentSteps";
 import { KnowledgeGraph } from "./KnowledgeGraph";
 import { RecommendResultCards } from "./RecommendResultCards";
+import { ThinkingBlock } from "./ThinkingBlock";
 
 type Props = {
   message: ChatMessage;
@@ -76,10 +77,7 @@ export function MessageView({ message, persona, streaming }: Props) {
 
       {hasText &&
         (() => {
-          // Backend currently overwrites `text` with "Error: <msg>" on the
-          // error WS event. Render those as a proper notice card instead of
-          // raw markdown so they don't look like a UI glitch — and so an empty
-          // `ev.message` doesn't surface as a bare "Error:" line.
+          // Error notice card
           const errorMatch = /^Error:\s*(.*)$/s.exec(message.text);
           if (errorMatch && !message.payload && !streaming) {
             const detail = errorMatch[1].trim();
@@ -104,6 +102,22 @@ export function MessageView({ message, persona, streaming }: Props) {
               </motion.div>
             );
           }
+
+          // Recommend context: render streaming reasoning as collapsible ThinkingBlock
+          const isRecommendContext = !!streaming
+            ? (message.steps?.length ?? 0) > 0 && !message.payload
+            : message.payload?.type === "recommend";
+          if (isRecommendContext || message.payload?.type === "recommend") {
+            return (
+              <ThinkingBlock
+                text={message.text}
+                streaming={!!streaming}
+                done={!streaming && !!message.payload}
+              />
+            );
+          }
+
+          // Default: prose rendering (review generation)
           return (
             <div
               className={`text-[15px] md:text-[15.5px] leading-[1.7] text-foreground prose prose-sm max-w-none overflow-x-hidden [overflow-wrap:break-word] [word-break:break-word] prose-p:my-0 prose-strong:text-foreground prose-strong:font-semibold prose-pre:overflow-x-auto prose-pre:max-w-full prose-code:break-all${

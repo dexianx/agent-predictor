@@ -22,11 +22,11 @@ export function ToolCallCard({ step }: Props) {
   const results = (step.output as { results?: Array<{ title: string; url: string; description: string }> })?.results ?? [];
 
   return (
-    <div className="mt-1 mb-1 rounded-lg border border-border/60 bg-muted/30 overflow-hidden text-[13px]">
+    <div className="mt-1 mb-1 rounded-lg border border-border/60 bg-muted/30 overflow-hidden text-[13px] min-w-0">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors text-left min-w-0"
       >
         <Globe className="size-3.5 text-primary shrink-0" />
         <span className="font-medium text-foreground/90 flex-1 truncate">
@@ -77,13 +77,13 @@ export function ToolCallCard({ step }: Props) {
                   </p>
                   <ul className="space-y-1.5">
                     {results.map((r, i) => (
-                      <li key={i} className="bg-background/60 rounded px-2 py-1.5 border border-border/40">
-                        <p className="font-medium text-foreground/90 truncate">{r.title}</p>
+                      <li key={i} className="bg-background/60 rounded px-2 py-1.5 border border-border/40 min-w-0 overflow-hidden">
+                        <p className="font-medium text-foreground/90 truncate min-w-0">{r.title}</p>
                         {r.url && (
-                          <p className="text-primary/70 text-[11px] truncate">{r.url}</p>
+                          <p className="text-primary/70 text-[11px] truncate min-w-0 overflow-hidden">{r.url}</p>
                         )}
                         {r.description && (
-                          <p className="text-muted-foreground text-[12px] mt-0.5 line-clamp-2">
+                          <p className="text-muted-foreground text-[12px] mt-0.5 line-clamp-2 break-words">
                             {r.description}
                           </p>
                         )}
