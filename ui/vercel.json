@@ -1,5 +1,8 @@
 {
-  "buildCommand": "vite build --config vite.spa.config.ts",
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "bun install",
+  "buildCommand": "bun run build:spa",
   "outputDirectory": "dist/spa",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
