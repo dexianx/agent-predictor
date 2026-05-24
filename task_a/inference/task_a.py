@@ -46,7 +46,6 @@ def get_driver():
             max_connection_pool_size=5,
             connection_timeout=30,
             max_connection_lifetime=3600,
-            max_connection_idle_time=1800,
             keep_alive=True,
         )
     return _driver
