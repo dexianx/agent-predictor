@@ -58,7 +58,6 @@ S100_LLM_TOP_K = int(os.environ.get("S100_LLM_TOP_K", "50"))
 S100_SIM_WEIGHT = float(os.environ.get("S100_SIM_WEIGHT", "0.5"))
 
 _driver = None
-_driver_loop_id = None
 _embedder = None
 
 
@@ -86,15 +85,25 @@ _mistral_limiter = _RateLimiter(MISTRAL_MIN_INTERVAL_S)
 
 
 def get_driver():
-    global _driver, _driver_loop_id
-    try:
-        loop_id = id(asyncio.get_running_loop())
-    except RuntimeError:
-        loop_id = None
-    if _driver is None or _driver_loop_id != loop_id:
-        _driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
-        _driver_loop_id = loop_id
+    global _driver
+    if _driver is None:
+        _driver = AsyncGraphDatabase.driver(
+            NEO4J_URI,
+            auth=(NEO4J_USER, NEO4J_PASS),
+            max_connection_pool_size=5,
+            connection_timeout=30,
+            max_connection_lifetime=3600,
+            max_connection_idle_time=1800,
+            keep_alive=True,
+        )
     return _driver
+
+
+async def close_driver():
+    global _driver
+    if _driver is not None:
+        await _driver.close()
+        _driver = None
 
 
 def get_embedder():

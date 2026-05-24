@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -13,8 +14,8 @@ from task_a.inference.persona_loader import (
     load_featured_personas,
     search_personas,
 )
-from task_a.inference.task_a import SimulateRequest, simulate_review
-from task_b.inference.recommend import RecommendRequest, recommend_items
+from task_a.inference.task_a import SimulateRequest, simulate_review, close_driver as close_ta
+from task_b.inference.recommend import RecommendRequest, recommend_items, get_driver, close_driver as close_rec
 from api.models import (
     PersonaDetail, CategoryBias, SimulateResponse,
     RecommendResponse, RecommendItem,
@@ -24,10 +25,20 @@ import sqlite3
 
 SQLITE_PATH = os.environ.get("SQLITE_PATH", "./personas.db")
 
+_logger = logging.getLogger("api")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        await get_driver().verify_connectivity()
+        _logger.info("Neo4j connectivity OK")
+    except Exception as exc:
+        _logger.warning("Neo4j not reachable at startup: %s", exc)
     yield
+    await close_rec()
+    await close_ta()
+    _logger.info("Neo4j drivers closed")
 
 
 app = FastAPI(title="Kora Task A API", lifespan=lifespan)
@@ -45,6 +56,15 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/neo4j")
+async def health_neo4j():
+    try:
+        info = await get_driver().verify_connectivity()
+        return {"status": "ok", "server": str(info)}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 # ── Persona endpoints ─────────────────────────────────────────────────────────
@@ -120,6 +140,7 @@ async def ws_simulate(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as exc:
+        _logger.exception("ws_simulate error")
         try:
             await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
         except Exception:
@@ -175,6 +196,7 @@ async def ws_recommend(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as exc:
+        _logger.exception("ws_recommend error")
         try:
             await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
         except Exception:
